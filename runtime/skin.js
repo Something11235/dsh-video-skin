@@ -175,10 +175,13 @@
     var src = typeof bootCfg.src === 'string' ? bootCfg.src : ''
     if (src === '') return null
 
-    var fadeMs = num(bootCfg.fadeMs, 1500, 200, 6000)
+    var fadeMs = num(bootCfg.fadeMs, 1000, 200, 6000)
+    /** `end`（默认，放完再淡）/ `tail`（片尾交叉溶解）。 */
+    var exitMode = bootCfg.exitMode === 'tail' ? 'tail' : 'end'
     var skipFadeMs = num(bootCfg.skipFadeMs, 320, 80, 2000)
     var holdMs = num(bootCfg.holdMs, 18000, 4000, 120000)
-    var noFrameMs = num(bootCfg.noFrameMs, 6000, 1500, 30000)
+    var holdGraceMs = num(bootCfg.holdGraceMs, 4000, 0, 30000)
+    var noFrameMs = num(bootCfg.noFrameMs, 12000, 1500, 30000)
     var endlessMs = num(bootCfg.endlessMs, 20000, 5000, 60000)
     var hintIdle = typeof bootCfg.hint === 'string' && bootCfg.hint ? bootCfg.hint : '正在启动…'
     var wantSound = bootCfg.sound !== false
@@ -271,7 +274,10 @@
 
     /**
      * 淡出并交接。
-     * @param {number} span 淡出时长（毫秒）。片尾交叉溶解传的是**真实剩余时间**。
+     *
+     * 传进来的 `span` **永远是配置里的固定时长**（`fadeMs` 或 `skipFadeMs`），
+     * 不是"距离片子结束还剩多久" —— 后者会缩到 100ms 级别，看起来就是硬切。
+     * @param {number} span 淡出时长（毫秒）。
      * @param {string} reason 诊断用的原因标签。
      */
     function enter(span, reason) {
@@ -286,6 +292,23 @@
       // 有声音时把音量一起淡到 0，而不是让画面淡完、声音被 pause 硬切。
       fadeAudio(ms)
       clearTimers()
+      // 留一条能查的痕迹：为什么退场、退场时片子放到哪了。
+      // 用户报"动画被切掉"时，这一行就能区分"放完了"和"被超时/出错打断了"。
+      try {
+        var media = state.video
+        if (global.console && global.console.info) {
+          global.console.info(
+            '[video-skin] boot overlay leaving: reason=' + reason +
+              ' fade=' + ms + 'ms' +
+              ' t=' + (media && isFinite(media.currentTime) ? media.currentTime.toFixed(2) : '?') +
+              ' dur=' + (media && isFinite(media.duration) ? media.duration.toFixed(2) : '?') +
+              ' clipDone=' + state.clipDone +
+              ' appReady=' + state.appReady,
+          )
+        }
+      } catch (error) {
+        /* 只是日志 */
+      }
       timer(function () {
         try {
           if (root.parentNode) root.parentNode.removeChild(root)
@@ -385,14 +408,19 @@
     }
 
     /**
-     * 片尾交叉溶解：从"剩余时间 ≤ 淡出时长"那一刻开始淡，片子放完时正好淡完。
+     * 片尾交叉溶解（只在 `exitMode: 'tail'` 时启用）。
      *
-     * 用每帧检查而不是提前排定时器：定时器在播放卡顿时就会偏，而这里唯一要买的
-     * 东西就是"淡出正好落在最后一帧上"。同时挂在 rAF 和 timeupdate 上——前者帧级
-     * 精确但后台标签页会被节流，后者粗糙但那时还有效，两个都不能少。
+     * **淡出时长固定用 `fadeMs`，不再用"当时的真实剩余时间"。** 早先按剩余时间淡，
+     * 界面就绪得晚时剩余可能只剩 100~200ms，那次退场看起来就是硬切 —— 用户报的
+     * "有时候还没放完就切掉了"正是它。固定时长之后，无论什么时候进入这个窗口，
+     * 退场都是同样一段渐变。
+     *
+     * 用每帧检查而不是提前排定时器：定时器在播放卡顿时就会偏。同时挂在 rAF 和
+     * timeupdate 上——前者帧级精确但后台标签页会被节流，后者粗糙但那时还有效。
      */
     function tailCheck() {
       var video = state.video
+      if (exitMode !== 'tail') return
       if (state.leaving || video === null || !state.playing) return
       if (!state.appReady || state.entered) return
       if (!isFinite(video.duration) || video.duration <= 0) return
@@ -400,12 +428,13 @@
       if (video.duration * 1000 < fadeMs * 2) return
       var remaining = (video.duration - video.currentTime) * 1000
       if (remaining > fadeMs || remaining <= 0) return
-      enter(remaining, 'tail')
+      enter(fadeMs, 'tail')
     }
 
     function frameLoop() {
       tailCheck()
-      if (!state.leaving) state.frameTimer = raf(frameLoop)
+      // `end` 模式下没有"片尾窗口"要盯，就别每帧空转。
+      if (!state.leaving && exitMode === 'tail') state.frameTimer = raf(frameLoop)
     }
 
     function markClipDone(reason) {
@@ -549,6 +578,7 @@
           ' rs=' + (video ? video.readyState : '-') +
           ' paused=' + (video ? video.paused : '-') +
           ' err=' + (video && video.error ? video.error.code : '-') +
+          ' exit=' + exitMode +
           ' why=' + (api.state.reason || '-') +
           ' log=' + api.state.failures.join(',')
       }, 700)
@@ -590,11 +620,36 @@
         if (endless !== null) global.clearTimeout(endless)
         markClipDone('ended')
       })
+      // 素材出错时**先重试一次**再放弃。
+      //
+      // 为什么值得重试：宿主刚启动时正忙着激活插件，这条本地素材路由偶尔会应答不上
+      // （连接被重置 / 一时 5xx）。早先一次 error 就直接 markClipDone ⇒ 界面一就绪
+      // 立刻退场，表现就是"开机动画有时候还没放完就切了"。重试一次能吃掉绝大多数
+      // 这种瞬时抖动，而且只重试一次，不会把坏素材拖成长等待。
+      var errorRetries = 0
       video.addEventListener('error', function () {
         global.clearTimeout(advance)
         if (endless !== null) global.clearTimeout(endless)
-        api.state.failures.push('video-error:' + (video.error ? video.error.code : 0))
-        markClipDone('error')
+        var code = video.error ? video.error.code : 0
+        api.state.failures.push('video-error:' + code)
+        if (errorRetries >= 1) {
+          markClipDone('error')
+          return
+        }
+        errorRetries += 1
+        api.state.failures.push('video-error-retry')
+        try {
+          video.src = src
+          var again = video.play()
+          if (again && typeof again.catch === 'function') again.catch(noop)
+        } catch (error) {
+          markClipDone('error-retry-throw')
+        }
+        // 重试也给一个新的"一帧都没出"看门狗，否则第一只已经被清掉了。
+        advance = timer(function () {
+          api.state.failures.push('no-frame-after-retry')
+          markClipDone('no-frame-after-retry')
+        }, noFrameMs)
       })
       video.addEventListener('stalled', function () {
         api.state.lastStallAt = Date.now()
@@ -693,8 +748,14 @@
     startDiagnostics()
     mountVideo()
 
-    // 内核一直不就绪时的上界：这块屏是装饰品，超时后必须让开。
-    // 让开用真实淡出，用户看到的是"启动较慢"而不是卡死。
+    // 内核一直不就绪时的上界。
+    //
+    // 这里**不再当场切掉**：早先是"到点立刻 enter()"，于是超时正好落在动画中间时，
+    // 用户看到的就是"还没放完就切了"（慢启动的机器上偶发）。现在分两步：
+    //   ① 到点只把状态转成"启动较慢"，并把 appReady 标记为真 —— 如果片子还在放，
+    //      它就继续放，放完自然会淡出交接；
+    //   ② 再给 `holdGraceMs` 宽限，到点才真的让开。
+    // 这块屏是装饰品，但"装饰品被拦腰截断"和"多等 4 秒"相比，后者体面得多。
     timer(function () {
       if (state.leaving || state.appReady) return
       state.failed = false
@@ -703,7 +764,12 @@
       api.state.appReady = true
       api.state.failures.push('hold-timeout')
       maybeEnter()
-      if (!state.leaving) enter(fadeMs, 'hold-timeout')
+      if (state.leaving) return
+      timer(function () {
+        if (state.leaving) return
+        api.state.failures.push('hold-grace-exhausted')
+        enter(fadeMs, 'hold-timeout')
+      }, holdGraceMs)
     }, holdMs)
 
     // 点击/触摸/按键：任何阶段都立刻跳过。**只有声音开关例外** —— 它的唯一职责是开声音，

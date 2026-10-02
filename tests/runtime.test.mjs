@@ -29,10 +29,13 @@ function config(patch = {}) {
     boot: {
       enabled: true,
       src: '/dsh-video-skin/boot.mp4',
-      fadeMs: 1500,
+      fadeMs: 1000,
+      // 默认 `end`：片子放完再淡。要测片尾交叉溶解的用例自己改成 'tail'。
+      exitMode: 'end',
       skipFadeMs: 320,
       holdMs: 18000,
-      noFrameMs: 6000,
+      holdGraceMs: 4000,
+      noFrameMs: 12000,
       endlessMs: 20000,
       hint: '正在启动…',
       skipLabel: '点击画面跳过',
@@ -181,7 +184,7 @@ test('有声音时淡出会连音量一起淡到 0，不是淡完硬切', () => 
   assert.equal(video.volume, 0, '淡出结束时音量必须是 0')
 })
 
-test('片尾交叉溶解：从剩余时间 ≤ fadeMs 开始，用的是真实剩余时间', async () => {
+test('默认 end 模式：片子放完才淡，界面早就绪也绝不提前截断', async () => {
   const h = createHarness()
   h.root.appendChild(makeKernelBootPage(h.document))
   h.run(RUNTIME, config())
@@ -194,22 +197,77 @@ test('片尾交叉溶解：从剩余时间 ≤ fadeMs 开始，用的是真实�
   h.clock.advance(32)
   assert.equal(overlay(h).getAttribute('data-state'), 'idle', '离片尾还远时不能开始淡')
 
-  video.currentTime = 8 - 1.6 // 剩余 1600ms > fadeMs 1500
+  // 一路逼近片尾：`end` 模式下任何时刻都不该动。
+  for (const t of [6.4, 7.0, 7.5, 7.99]) {
+    video.currentTime = t
+    h.clock.advance(32)
+    assert.equal(
+      overlay(h).getAttribute('data-state'),
+      'idle',
+      `片子还有 ${(8 - t).toFixed(2)}s，end 模式不该开始淡（t=${t}）`,
+    )
+  }
+
+  video.ended = true
+  video.dispatchEvent({ type: 'ended' })
+  h.clock.advance(32)
+  const el = overlay(h)
+  assert.equal(el.getAttribute('data-state'), 'leaving', '放完了才开始淡')
+  assert.equal(el.style.getPropertyValue('--dsvs-boot-fade'), '1000ms', '用固定的 fadeMs')
+
+  h.clock.advance(1200)
+  assert.equal(overlay(h), null, '淡出后不能留下任何盖住界面的节点')
+  await flush()
+  assert.ok(backdrop(h), '交接完成之后才建背景层')
+})
+
+test('end 模式：片子放完但界面还没就绪 → 等就绪再淡，不提前放行', () => {
+  const h = createHarness()
+  h.root.appendChild(makeKernelBootPage(h.document))
+  h.run(RUNTIME, config())
+  const video = bootVideo(h)
+  video.duration = 8
+  revealClip(video)
+  h.clock.advance(32)
+
+  video.ended = true
+  video.dispatchEvent({ type: 'ended' })
+  h.clock.advance(32)
+  assert.equal(overlay(h).getAttribute('data-state'), 'idle', '界面没就绪就交接会露出空白')
+
+  reachAppReady(h)
+  h.clock.advance(32)
+  assert.equal(overlay(h).getAttribute('data-state'), 'leaving')
+})
+
+test('tail 模式：窗口内开始交叉溶解，且淡出时长是固定的 fadeMs 而不是剩余时间', async () => {
+  const h = createHarness()
+  h.root.appendChild(makeKernelBootPage(h.document))
+  h.run(RUNTIME, config({ boot: { exitMode: 'tail' } }))
+  const video = bootVideo(h)
+  video.duration = 8
+  video.currentTime = 1
+  revealClip(video)
+  reachAppReady(h)
+
+  h.clock.advance(32)
+  video.currentTime = 8 - 1.6 // 剩余 1600ms > fadeMs 1000
   h.clock.advance(32)
   assert.equal(overlay(h).getAttribute('data-state'), 'idle', '窗口外一帧都不能提前淡')
 
-  video.currentTime = 8 - 1.2 // 剩余 1200ms ≤ fadeMs
+  video.currentTime = 8 - 0.2 // 剩余只有 200ms
   h.clock.advance(32)
   const el = overlay(h)
   assert.equal(el.getAttribute('data-state'), 'leaving', '进入窗口立刻开始交叉溶解')
+  // **这一条就是用户报的 bug 的守卫**：早先这里写的是 "200ms"（真实剩余时间），
+  // 于是界面就绪得晚时，那次退场短到看起来就是硬切。
   assert.equal(
     el.style.getPropertyValue('--dsvs-boot-fade'),
-    '1200ms',
-    '淡出时长必须是**当时的真实剩余时间**，不是配置值 1500',
+    '1000ms',
+    '淡出时长必须是配置里的固定值，不能缩成"当时还剩多少"',
   )
 
-  // 淡出结束（span + 140）后覆盖层必须整个从 DOM 里消失。
-  h.clock.advance(1400)
+  h.clock.advance(1200)
   assert.equal(overlay(h), null, '淡出后不能留下任何盖住界面的节点')
   await flush()
   assert.ok(backdrop(h), '交接完成之后才建背景层')
@@ -217,10 +275,10 @@ test('片尾交叉溶解：从剩余时间 ≤ fadeMs 开始，用的是真实�
 
 test('片子短于 2×fadeMs 时不做尾部溶解，改成放完再淡', () => {
   const h = createHarness()
-  h.run(RUNTIME, config())
+  h.run(RUNTIME, config({ boot: { exitMode: 'tail' } }))
   const video = bootVideo(h)
-  video.duration = 2 // 2000 < 2 * 1500
-  video.currentTime = 1.9 // 剩余只有 100ms
+  video.duration = 1.5 // 1500 < 2 * 1000
+  video.currentTime = 1.4 // 剩余只有 100ms
   revealClip(video)
   reachAppReady(h)
   h.clock.advance(64)
@@ -231,7 +289,7 @@ test('片子短于 2×fadeMs 时不做尾部溶解，改成放完再淡', () => 
   h.clock.advance(32)
   const el = overlay(h)
   assert.equal(el.getAttribute('data-state'), 'leaving')
-  assert.equal(el.style.getPropertyValue('--dsvs-boot-fade'), '1500ms')
+  assert.equal(el.style.getPropertyValue('--dsvs-boot-fade'), '1000ms')
 })
 
 test('点击画面立刻跳过，用 skipFadeMs 而不是 fadeMs', () => {
@@ -291,17 +349,76 @@ test('时长未知（duration = Infinity）：靠唯一的上界放开，不会�
   reachAppReady(h)
   h.clock.advance(1000)
   assert.equal(overlay(h).getAttribute('data-state'), 'idle')
-  h.clock.advance(20000)
+  // 走到 endlessMs（1000 已过，再补 19000）。断言"开始淡出"而不是"覆盖层还在"，
+  // 免得把断言的成败绑在 fadeMs 的大小上。
+  h.clock.advance(19000)
   assert.equal(overlay(h).getAttribute('data-state'), 'leaving')
 })
 
-test('素材报错：不扣住用户，界面直接显形', () => {
+test('素材报错：先重试一次；两次都失败才让开（吃掉启动瞬间的瞬时抖动）', () => {
   const h = createHarness()
   h.run(RUNTIME, config())
   reachAppReady(h)
-  bootVideo(h).dispatchEvent({ type: 'error' })
+  const video = bootVideo(h)
+  const firstSrc = video.src
+
+  video.dispatchEvent({ type: 'error' })
+  h.clock.advance(32)
+  // 一次 error ≠ 素材坏了。早先这里直接 markClipDone，界面一就绪就退场，
+  // 表现就是"开机动画有时候还没放完就切了"（宿主刚启动时路由偶尔应答不上）。
+  assert.equal(overlay(h).getAttribute('data-state'), 'idle', '第一次报错要重试，不能当场退场')
+  assert.equal(video.src, firstSrc, '重试就是重新挂同一个 src')
+  assert.ok(
+    h.window.__DSH_VIDEO_SKIN__.state.failures.includes('video-error-retry'),
+    '诊断里要留下重试痕迹',
+  )
+
+  video.dispatchEvent({ type: 'error' })
+  h.clock.advance(32)
+  assert.equal(overlay(h).getAttribute('data-state'), 'leaving', '第二次才认输')
+})
+
+test('重试之后一帧都出不来：新的看门狗仍然把用户放开', () => {
+  const h = createHarness()
+  h.run(RUNTIME, config({ boot: { noFrameMs: 3000 } }))
+  reachAppReady(h)
+  const video = bootVideo(h)
+  video.dispatchEvent({ type: 'error' })
+  h.clock.advance(3100)
+  assert.equal(overlay(h).getAttribute('data-state'), 'leaving')
+})
+
+test('内核超时不截断动画：片子还在放就让它放完，宽限用完才硬让开', () => {
+  const h = createHarness()
+  h.run(RUNTIME, config({ boot: { holdMs: 5000, holdGraceMs: 2000 } }))
+  const video = bootVideo(h)
+  video.duration = 20
+  video.currentTime = 4
+  revealClip(video)
+
+  // 到 holdMs 时片子还剩 16 秒 —— 不能当场切掉。
+  h.clock.advance(5100)
+  assert.equal(overlay(h).getAttribute('data-state'), 'idle', '超时不该把动画截在中间')
+  assert.match(overlay(h).querySelector('.dsvs-boot-hint').textContent, /启动较慢/u)
+
+  // 宽限期内片子放完 → 走正常交接。
+  video.currentTime = 20
+  video.ended = true
+  video.dispatchEvent({ type: 'ended' })
   h.clock.advance(32)
   assert.equal(overlay(h).getAttribute('data-state'), 'leaving')
+
+  // 另一条路：片子一直没放完，宽限用完必须让开（这块屏是装饰品）。
+  const h2 = createHarness()
+  h2.run(RUNTIME, config({ boot: { holdMs: 5000, holdGraceMs: 2000 } }))
+  const video2 = bootVideo(h2)
+  video2.duration = 600
+  video2.currentTime = 1
+  revealClip(video2)
+  h2.clock.advance(5100)
+  assert.equal(overlay(h2).getAttribute('data-state'), 'idle')
+  h2.clock.advance(2100)
+  assert.equal(overlay(h2).getAttribute('data-state'), 'leaving', '宽限用完还是得让开')
 })
 
 test('内核启动失败：提示转琥珀色，并自动让开让用户看到失败原因', () => {

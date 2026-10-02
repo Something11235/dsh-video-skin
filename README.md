@@ -25,12 +25,15 @@ transparency sliders; click anywhere during the boot animation to skip it.
 ---
 
 A **video skin** for DSH: one clip becomes a looping, silent **video backdrop** behind the whole Web UI,
-and a second clip becomes a **boot animation** — **played with sound**, cross-dissolving into the app,
-and **skippable with a click**.
+and a second clip becomes a **boot animation** — **played with sound**, **played through to its end**,
+then fading into the app, and **skippable with a click**.
 
 - Boot animation: full-window clip **with audio**, a progress bar driven by the kernel's real activation
-  progress, and a permanent “click to skip” pill. The fade starts `fadeMs` **before the clip ends**, so the
-  dissolve finishes exactly on the last frame; the volume fades out with it instead of being cut off.
+  progress, and a permanent “click to skip” pill. The clip **finishes first** (`ended`), then the overlay
+  fades out over a **fixed** `fadeMs`; the volume fades with it instead of being cut off.
+  > Earlier builds cross-dissolved over the clip's tail and used the *actual remaining time* as the fade
+  > duration — when the app became ready late that left only 100–200 ms, which read as a **hard cut**.
+  > Default is now `exitMode: 'end'`; `exitMode: 'tail'` restores the crossfade (still with a fixed fade).
 - Backdrop: silent, looping, `object-fit: cover`, with the app's surface tokens made translucent —
   **the picture is clearly visible** and the text stays readable.
 - A **transparency slider in the UI** (bottom-right pill): two sliders, three presets, and a live
@@ -117,7 +120,7 @@ startup snapshot, so those need a restart.
 
 ```json
 {
-  "boot":       { "enabled": true, "fadeMs": 1500, "skipFadeMs": 320, "holdMs": 18000, "hint": "点击画面跳过" },
+  "boot":       { "enabled": true, "fadeMs": 1000, "exitMode": "end", "skipFadeMs": 320, "holdMs": 18000, "hint": "点击画面跳过" },
   "background": { "enabled": true, "veil": 0.32, "surface": 0.5, "delayMs": 1200, "playbackRate": 1 }
 }
 ```
@@ -155,16 +158,18 @@ node scripts/verify-all.mjs
 ```
 
 `tests/runtime.test.mjs` runs the injected script inside a stub DOM with a virtual clock and asserts the
-real timing properties (the tail dissolve fires on the *actual* remaining time; a click uses
+real timing properties (the clip plays to `ended` before the fade; the fade span is always the configured
+`fadeMs`, never the remaining time; a click uses
 `skipFadeMs`; **unmuted is tried first and muted is the fallback**; the sound button toggles sound
 without skipping; the volume fades to 0 with the picture; unknown duration / no first frame / media
-error / a never-ready kernel each have an upper bound). `tests/host.test.mjs` drives the real `apply()`
+error (retried once) / a never-ready kernel each have an upper bound that never truncates the clip).
+`tests/host.test.mjs` drives the real `apply()`
 against a real HTTP server for the Range, `ETag`, `304`, `416` and cache-header contracts.
 
 Two more suites need a live target:
 
 ```powershell
-# 66 assertions (Electron-equivalent autoplay) / 56 (plain browser) in a real headless Chromium over CDP:
+# 75 assertions (Electron-equivalent autoplay) / 65 (plain browser) in a real headless Chromium over CDP:
 #   --autoplay allow (Electron-equivalent): unmuted playback, no sound button,
 #                                          webkitAudioDecodedByteCount > 0 (the audio track really decodes)
 #   --autoplay block (plain browser)      : muted fallback, sound button visible, a real mouse click on it

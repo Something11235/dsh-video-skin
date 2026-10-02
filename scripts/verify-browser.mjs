@@ -862,6 +862,93 @@ try {
     }
     assert(stillThere === false, 'E23 恢复默认真的把文件里那几项摘掉了', { configFile })
   }
+
+  // ── 阶段 F：什么都不点，盯着开机动画看它是否**完整放完** ──
+  //
+  // 这一节是"开场动画有时候还没放完就切掉了"那个报障的回归守卫。早先的退场有两条路
+  // 会提前截断：①片尾交叉溶解的淡出时长是"当时的真实剩余时间"，界面就绪得晚时只剩
+  // 100~200ms（看起来就是硬切）；②素材一次报错就直接交接。现在必须是：
+  // 片子放到 dur 附近才开始淡，而且淡出时长是固定的 fadeMs。
+  {
+    const reloaded = cdp.waitEvent('Page.loadEventFired')
+    await cdp.send('Page.reload', { ignoreCache: true })
+    await reloaded
+
+    const samples = []
+    let leavingSample = null
+    const deadline = Date.now() + 25000
+    let firstAt = null
+    while (Date.now() < deadline) {
+      const sample = await cdp.evaluate(`(() => {
+        const root = document.querySelector('.dsvs-boot')
+        const video = document.querySelector('.dsvs-boot-video')
+        const api = window.__DSH_VIDEO_SKIN__
+        return {
+          at: Math.round(performance.now()),
+          exists: root !== null,
+          state: root === null ? 'gone' : root.getAttribute('data-state'),
+          fade: root === null ? null : root.style.getPropertyValue('--dsvs-boot-fade'),
+          time: video !== null && isFinite(video.currentTime) ? Math.round(video.currentTime * 1000) / 1000 : null,
+          duration: video !== null && isFinite(video.duration) ? Math.round(video.duration * 1000) / 1000 : null,
+          ended: video === null ? null : video.ended,
+          error: video !== null && video.error !== null ? video.error.code : null,
+          failures: api && api.state ? api.state.failures.join(',') : '',
+        }
+      })()`)
+      if (firstAt === null) firstAt = sample.at
+      samples.push(sample)
+      if (sample.state === 'leaving' && leavingSample === null) leavingSample = sample
+      if (sample.exists === false && leavingSample !== null) break
+      if (sample.exists === false) break
+      await sleep(300)
+    }
+
+    const duration = samples.find((item) => item.duration !== null)?.duration ?? null
+    const heldToEnd = samples.find(
+      (item) => item.state === 'idle' && item.time !== null && duration !== null && item.time >= duration - 0.3,
+    )
+    assert(duration !== null && duration > 7, 'F1 读到了片段时长（后面几条都靠它）', { duration, samples: samples.length })
+    assert(
+      heldToEnd !== undefined,
+      'F2 **片子走到片尾时覆盖层仍是 idle**（没有提前开始淡）',
+      { duration, samples },
+    )
+    assert(leavingSample !== null, 'F3 片子放完后确实开始交接', { samples })
+    if (leavingSample !== null) {
+      assert(
+        leavingSample.fade === '1000ms',
+        'F4 淡出时长是固定的 fadeMs（1000ms），不是"当时还剩多少"',
+        leavingSample,
+      )
+      assert(
+        leavingSample.time !== null && duration !== null && leavingSample.time >= duration - 0.3,
+        'F5 淡出是从片尾开始的（不是放到一半）',
+        leavingSample,
+      )
+      assert(
+        !/video-error|no-frame/.test(leavingSample.failures),
+        'F6 退场原因里没有"素材报错 / 一帧都出不来"',
+        leavingSample,
+      )
+    }
+    const gone = samples.find((item) => item.exists === false)
+    assert(gone !== undefined, 'F7 淡完之后覆盖层从 DOM 里消失', { samples })
+    if (gone !== undefined && leavingSample !== null) {
+      const fadeSpan = gone.at - leavingSample.at
+      assert(
+        fadeSpan >= 600 && fadeSpan <= 2600,
+        `F8 淡出真的花了约 ${fadeSpan}ms（在 1000ms 量级，不是瞬切也不是卡住）`,
+        { fadeSpan, leavingSample, gone },
+      )
+    }
+    const afterBoot = await cdp.evaluate(`(() => {
+      const layer = document.querySelector('#dsvs-backdrop')
+      const video = document.querySelector('#dsvs-backdrop-video')
+      return { hasLayer: layer !== null, layerHasVideo: video !== null }
+    })()`)
+    assert(afterBoot.hasLayer && afterBoot.layerHasVideo, 'F9 交接之后背景层照常建起来', afterBoot)
+    console.log(`     完整播放：duration=${duration}s，退场 fade=${leavingSample?.fade}，t=${leavingSample?.time}s`)
+  }
 } catch (error) {
   assert(false, 'E2E 运行期异常', error instanceof Error ? error.message : String(error))
 } finally {
