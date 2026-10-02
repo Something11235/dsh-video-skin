@@ -194,6 +194,22 @@ await check('package.json 的 files 覆盖运行时读取的每条路径', () =>
     assert.ok(fs.existsSync(path.join(root, relative)), `缺少文件：${relative}`)
     assert.ok(covered(relative), `files 白名单没覆盖：${relative}`)
   }
+  // 发布面：npm 通道要能让用户装完自己跑测试，发布说明也得在包里。
+  for (const relative of ['scripts/verify-all.mjs', 'tests/lib.test.mjs', 'PUBLISHING.md']) {
+    assert.ok(covered(relative), `files 白名单没覆盖：${relative}`)
+  }
+  // 元数据要指向真实地址，否则 npm 页面上的链接是坏的。
+  assert.match(pkg.repository?.url ?? '', /Something11235\/dsh-video-skin/u)
+  assert.equal(pkg.author, 'Something11235')
+})
+
+await check('没有任何会被 pnpm 拦下的 git 依赖生命周期脚本', () => {
+  // 这一条是 `github:` 安装能不能成立的关键：pnpm 会拦 git 依赖的构建脚本，
+  // 带 `prepare` 的仓库会让 `dsh plugin add "github:..."` 直接失败（即使产物已经提交）。
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const forbidden = ['prepare', 'prepack', 'postinstall', 'preinstall', 'install']
+  const present = forbidden.filter((key) => key in (pkg.scripts ?? {}))
+  assert.deepEqual(present, [], `这些脚本会让 git 安装失败：${present.join(', ')}`)
 })
 
 // ④ patch 行
