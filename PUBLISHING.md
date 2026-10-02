@@ -63,6 +63,17 @@ GitHub 仓库页 → 右上 **⚙ About** → **Topics** 加一个：**`dsh-plug
 
 ## 4. 验一遍"别人那一行"
 
+> **已经验过了（2026-10-02，针对 `main` 上的 `335c871`）：**
+>
+> | 步骤 | 结果 |
+> | --- | --- |
+> | `git ls-remote https://github.com/Something11235/dsh-video-skin.git` | `refs/heads/main` = `335c871…`（公开可读） |
+> | `dsh plugin --profile verify add "dsh-video-skin"`（**只写包名**） | ❌ `ERR_PNPM_FETCH_404`：裸名按 **npm 包名**解析，去 registry 找 |
+> | `dsh plugin --profile verify add "github:Something11235/dsh-video-skin#main"` | ✅ exit 0，7.1s，`+ dsh-video-skin 0.1.0`；落进 pnpm store 的 `dsh-video-skin@https+++code_121832de…`；运行所需文件齐、`boot.mp4` 2 680 723 字节完整 |
+> | 启动那一份装出来的副本 → 真 Chromium + CDP 验收 | ✅ **66/66**（有声开机动画且音频真的被解码、点击跳过、背景层、可读性、透明度滑块 + 刷新后仍在） |
+>
+> 结论：**用户要输入的是完整的那一行，不是包名。** 想让裸名也能用，只有一条路 —— 发到 npm（见文末）。
+
 在**一个干净 profile** 上装（不要用你日常那个）：
 
 ```powershell
@@ -105,7 +116,15 @@ git add -A; git commit -m "..."; git push
 别人那边**更新要重新装**：DSH 的插件管理器目前不支持原地升级 —— 先卸载再装一次
 （`dsh plugin --profile <p> remove dsh-video-skin` 然后重新 `add`）。
 
-### 想发 npm（可选）
+### 想让"只输入 `dsh-video-skin`"也能装：只能发 npm
+
+插件管理器那个输入框的解析规则是（`@deepseek-ai/dsh-plugin-manager` 的 `install-spec` 模块）：
+
+- 长得像包名的（`dsh-video-skin`）→ 走 **npm registry**（`pnpm view` + 装）；
+- `github:` / `git+` / `git@` / `gitlab:` / `bitbucket:` / `https://…` → 走 git。
+
+所以裸名要能用，**除了发到 npm 没有第二条路**；GitHub 上的 `dsh-plugin` topic 是给市场列表
+收录用的，不改变这个输入框的解析。
 
 ```powershell
 npm login
