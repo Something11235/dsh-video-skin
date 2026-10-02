@@ -1,0 +1,63 @@
+{
+  "name": "dsh-video-skin",
+  "version": "0.1.0",
+  "description": "DSH 视频皮肤：一段短片循环铺成整个界面的聊天背景（无声、可调透明度），另一段做有声的开机动画（片尾交叉溶解进界面、点击画面随时跳过）。零依赖。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "runtime",
+    "assets",
+    "scripts",
+    "docs",
+    "cordis.patch.yml",
+    "video-skin.config.example.json",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "author": "Something11235",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Something11235/dsh-video-skin.git"
+  },
+  "homepage": "https://github.com/Something11235/dsh-video-skin#readme",
+  "bugs": {
+    "url": "https://github.com/Something11235/dsh-video-skin/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "video",
+    "background",
+    "wallpaper",
+    "boot-animation",
+    "splash",
+    "skin"
+  ],
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "check": "node scripts/check-syntax.mjs",
+    "verify": "node scripts/verify-all.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

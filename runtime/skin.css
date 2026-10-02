@@ -1,0 +1,549 @@
+/*
+ * dsh-video-skin — 注入到 index.html <head> 的样式（结构化注入行的 kind:'style'）。
+ *
+ * 两件事：
+ *   ① 开机动画覆盖层（.dsvs-boot*）——自己带全部样式，不依赖任何主题变量；
+ *   ② 聊天背景（#dsvs-backdrop + 界面表面半透明化）。
+ *
+ * 为什么表面半透明化改的是 `--dsw-alias-*` 而不是给某个容器加样式：
+ * 内核主题（dsh-client-ui-theme）把整套色板定义在 `body` / `body[data-ds-dark-theme]`
+ * 上（静态色 `--dsw-static-*` 在 `:root`，别名色在 `body`），全应用的可视表面都引用
+ * 这些别名。覆盖别名 = 一次改到所有面板，不需要知道任何组件类名。
+ * 自定义属性上的 `!important` 会压过主题里的普通声明（与选择器特异性无关），
+ * 所以这里的规则不需要和内核比特异性，也不会被后来的主题样式翻盘。
+ *
+ * 不改的表面（刻意保留不透明，怕影响可读性）：
+ *   --dsw-alias-bg-overlay（弹层/气泡/菜单）、--dsw-menu-surface-fill、
+ *   --dsw-alias-bg-document-preview、--dsw-alias-bg-mask-*
+ */
+
+/* ─────────────────────────── ① 开机动画覆盖层 ─────────────────────────── */
+
+.dsvs-boot {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  overflow: hidden;
+  display: block;
+  background: radial-gradient(circle at 50% 44%, #0d1a2b 0%, #070b12 62%, #04060a 100%);
+  color: #e8eef6;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  opacity: 1;
+  /* 淡出时长由 JS 写进 --dsvs-boot-fade（片尾交叉溶解用的是"真实剩余时间"，
+     不能是一个固定值）。这里只给兜底默认。 */
+  transition: opacity var(--dsvs-boot-fade, 1500ms) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.dsvs-boot[data-state="leaving"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dsvs-boot-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 700ms ease;
+  background: transparent;
+}
+
+.dsvs-boot-video[data-shown="1"] {
+  opacity: 1;
+}
+
+.dsvs-boot-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 92% 86% at 50% 50%, transparent 58%, rgba(3, 7, 13, 0.55) 100%);
+}
+
+.dsvs-boot-ui {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 30px 34px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.6);
+}
+
+.dsvs-boot-bar {
+  width: min(340px, 54vw);
+  height: 2px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(232, 238, 246, 0.2);
+}
+
+.dsvs-boot-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #4f9dd9, #9fdcff);
+  box-shadow: 0 0 12px rgba(143, 216, 255, 0.6);
+  transition: width 380ms ease;
+}
+
+.dsvs-boot-hint {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: #9db8d4;
+  opacity: 0.92;
+}
+
+/* 「点击画面跳过」——用户要求必须显式提醒，所以它是一个一直在、并且有呼吸感的胶囊按钮，
+   而不是一行容易错过的浅色小字。 */
+.dsvs-boot-skip {
+  position: absolute;
+  right: 26px;
+  bottom: 26px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  color: #dfeaf7;
+  background: rgba(10, 18, 30, 0.55);
+  border: 1px solid rgba(198, 220, 246, 0.3);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: dsvs-skip-pulse 2.6s ease-in-out infinite;
+  transition: opacity 400ms ease;
+  pointer-events: none;
+}
+
+/* 声音开关：**独立命中区**。只在浏览器拦下未静音自动播放时出现，
+   点它只开声音、不跳过（所以它必须 pointer-events:auto，且覆盖层的 capture 阶段
+   点击处理要按事件目标把它排除掉）。放在左下角，和右下角的跳过胶囊分开。 */
+.dsvs-boot-sound {
+  position: absolute;
+  left: 26px;
+  bottom: 26px;
+  z-index: 4;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  color: #ffe6bd;
+  background: rgba(38, 26, 10, 0.62);
+  border: 1px solid rgba(255, 215, 154, 0.5);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: opacity 400ms ease, background 200ms ease;
+}
+
+.dsvs-boot-sound[data-visible="1"] {
+  display: inline-flex;
+}
+
+.dsvs-boot-sound:hover {
+  background: rgba(58, 40, 16, 0.78);
+}
+
+.dsvs-boot-sound-glyph {
+  font-size: 12px;
+}
+
+.dsvs-boot[data-state="leaving"] .dsvs-boot-sound {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dsvs-boot-skip-glyph {
+  font-size: 11px;
+  opacity: 0.85;}
+
+.dsvs-boot[data-state="leaving"] .dsvs-boot-skip {
+  opacity: 0;
+}
+
+/* 内核启动失败 / 启动超时：提示行转琥珀色，避免用户在装饰性画面上等着一个永远不会来的界面。 */
+.dsvs-boot[data-attention="1"] .dsvs-boot-hint {
+  color: #ffd79a;
+  letter-spacing: 0.02em;
+}
+
+.dsvs-boot[data-attention="1"] .dsvs-boot-fill {
+  background: linear-gradient(90deg, #d99a4f, #ffd79a);
+}
+
+.dsvs-boot[data-attention="1"] .dsvs-boot-skip {
+  border-color: rgba(255, 215, 154, 0.55);
+  color: #ffe6bd;
+}
+
+@keyframes dsvs-skip-pulse {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.9;
+  }
+  50% {
+    transform: translateY(-2px);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsvs-boot-skip {
+    animation: none;
+  }
+}
+
+/* ─────────────────────────── ② 聊天背景 ─────────────────────────── */
+
+/* html 的画布色：视频还没解码出来时不要闪白/闪黑。`:has()` 让它在主题切换时自动跟随。 */
+html[data-dsvs="on"]:has(body[data-ds-dark-theme]) {
+  background-color: #0e1116 !important;
+}
+
+html[data-dsvs="on"]:not(:has(body[data-ds-dark-theme])) {
+  background-color: #eef1f5 !important;
+}
+
+html[data-dsvs="on"],
+html[data-dsvs="on"] body {
+  /* 主题把不透明底色画在 body 上（`background-color: var(--dsw-alias-bg-base)`），
+     不透明的话视频永远被盖住。 */
+  background-color: transparent !important;
+}
+
+/* 背景层：z-index:-1 让它落在所有在流内容之下（包括直接挂在 body 上的 portal），
+   所以不需要给应用任何东西加 z-index，也不会挡住任何交互。 */
+#dsvs-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: #0e1116;
+}
+
+body:not([data-ds-dark-theme]) #dsvs-backdrop {
+  background: #eef1f5;
+}
+
+#dsvs-backdrop-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* 「填充整个界面」：裁切而不是留黑边。 */
+  object-fit: cover;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 900ms ease;
+}
+
+#dsvs-backdrop-video[data-shown="1"] {
+  opacity: 1;
+}
+
+#dsvs-backdrop-veil {
+  position: absolute;
+  inset: 0;
+  /* 视频上的蒙版：亮主题压白、暗主题压黑，两边的目的都是把画面的平均亮度拉向
+     文字色所在的那一端。透明度由 --dsvs-l-veil / --dsvs-veil 控制。 */
+  background: rgba(255, 255, 255, var(--dsvs-l-veil, 0.1));
+}
+
+body[data-ds-dark-theme] #dsvs-backdrop-veil {
+  background: rgba(0, 0, 0, var(--dsvs-veil, 0.14));
+}
+
+/* 表面半透明化。
+ *
+ * **暗色和亮色的表面值刻意不同**：文字在暗主题是浅色、在亮主题是深色，而这条素材整体偏暗
+ * （实测 YAVG≈0.25），所以同样薄的白色表面会让深色文字掉到 3:1 以下，而深色表面不会。
+ * 两边都用一个值的结果就是"亮主题没法读"。实测数据见 README §3。
+ *
+ * 每一层的不透明度都是 JS 先算好再写成独立变量，不在 `rgba()` 里写 `calc(var(...) + .14)`：
+ * 自定义属性是 token 流，`calc()` 会被原样替换进颜色函数，能不能解析取决于实现；
+ * 算好再写就没有这层不确定性，而且值本身可以直接被断言。 */
+html[data-dsvs="on"] body {
+  --dsw-alias-bg-base: rgba(255, 255, 255, var(--dsvs-l-surface, 0.6)) !important;
+  --dsw-alias-bg-layer-1: rgba(255, 255, 255, var(--dsvs-l-layer1, 0.7)) !important;
+  --dsw-alias-bg-layer-2: rgba(255, 255, 255, var(--dsvs-l-layer2, 0.76)) !important;
+  --dsw-alias-bg-layer-3: rgba(255, 255, 255, var(--dsvs-l-layer3, 0.8)) !important;
+  --dsw-specific-sidebar-fill: rgba(249, 250, 251, var(--dsvs-l-sidebar, 0.66)) !important;
+}
+
+html[data-dsvs="on"] body[data-ds-dark-theme] {
+  --dsw-alias-bg-base: rgba(21, 21, 23, var(--dsvs-surface, 0.2)) !important;
+  --dsw-alias-bg-layer-1: rgba(35, 35, 36, var(--dsvs-layer1, 0.3)) !important;
+  --dsw-alias-bg-layer-2: rgba(41, 41, 41, var(--dsvs-layer2, 0.36)) !important;
+  --dsw-alias-bg-layer-3: rgba(47, 47, 49, var(--dsvs-layer3, 0.4)) !important;
+  --dsw-specific-sidebar-fill: rgba(27, 27, 28, var(--dsvs-sidebar, 0.26)) !important;
+}
+
+/* reduced-motion 下不播背景视频（只剩蒙版+半透明表面，观感仍然成立）。 */
+@media (prefers-reduced-motion: reduce) {
+  #dsvs-backdrop-video {
+    display: none;
+  }
+}
+
+/* ─────────────────── ③ 透明度调节（右下角圆钮 + 滑块面板） ─────────────────── */
+
+/* 圆钮平时半透明，鼠标靠近才变实 —— 它是一个"需要时找得到、平时不碍事"的入口。 */
+#dsvs-knobs-pill {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 900;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: #dfeaf7;
+  background: rgba(12, 20, 32, 0.5);
+  border: 1px solid rgba(198, 220, 246, 0.26);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  opacity: 0.34;
+  transition: opacity 220ms ease, transform 220ms ease, background 220ms ease;
+  pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#dsvs-knobs-pill:hover,
+#dsvs-knobs-pill:focus-visible,
+#dsvs-knobs-pill[data-active="1"] {
+  opacity: 1;
+  background: rgba(18, 30, 48, 0.82);
+  transform: scale(1.06);
+}
+
+body:not([data-ds-dark-theme]) #dsvs-knobs-pill {
+  color: #2a3442;
+  background: rgba(255, 255, 255, 0.66);
+  border-color: rgba(20, 30, 45, 0.18);
+}
+
+#dsvs-knobs {
+  position: fixed;
+  right: 16px;
+  bottom: 58px;
+  z-index: 901;
+  width: 268px;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-radius: 14px;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 12.5px;
+  color: #e6eef8;
+  background: rgba(14, 20, 30, 0.92);
+  border: 1px solid rgba(198, 220, 246, 0.22);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#dsvs-knobs[data-open="1"] {
+  display: flex;
+}
+
+body:not([data-ds-dark-theme]) #dsvs-knobs {
+  color: #1e2734;
+  background: rgba(252, 253, 255, 0.96);
+  border-color: rgba(20, 30, 45, 0.14);
+  box-shadow: 0 18px 48px rgba(20, 32, 48, 0.22);
+}
+
+.dsvs-knobs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dsvs-knobs-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.dsvs-knobs-close {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.dsvs-knobs-close:hover {
+  opacity: 1;
+}
+
+.dsvs-knobs-presets {
+  display: flex;
+  gap: 6px;
+}
+
+.dsvs-knobs-preset {
+  flex: 1;
+  text-align: center;
+  padding: 5px 0;
+  border-radius: 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+body:not([data-ds-dark-theme]) .dsvs-knobs-preset {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.1);
+}
+
+.dsvs-knobs-preset:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.dsvs-knobs-preset[data-active="1"] {
+  background: rgba(90, 160, 230, 0.3);
+  border-color: rgba(140, 200, 255, 0.6);
+}
+
+.dsvs-knobs-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dsvs-knobs-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  opacity: 0.9;
+}
+
+.dsvs-knobs-value {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.dsvs-knobs-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  margin: 4px 0 0;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+  cursor: pointer;
+}
+
+body:not([data-ds-dark-theme]) .dsvs-knobs-range {
+  background: rgba(20, 30, 45, 0.16);
+}
+
+.dsvs-knobs-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #7fc0ff;
+  border: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.dsvs-knobs-note {
+  font-size: 11px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsvs-knobs-badge {
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-knobs-badge {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.1);
+}
+
+/* 徽章的颜色就是"还能不能读"的结论：绿=很充裕、蓝=够用、琥珀=偏低。 */
+.dsvs-knobs-badge[data-level="great"] {
+  color: #8ce0a8;
+  border-color: rgba(140, 224, 168, 0.45);
+}
+
+.dsvs-knobs-badge[data-level="ok"] {
+  color: #9ecbff;
+  border-color: rgba(158, 203, 255, 0.45);
+}
+
+.dsvs-knobs-badge[data-level="low"] {
+  color: #ffd79a;
+  border-color: rgba(255, 215, 154, 0.55);
+}
+
+.dsvs-knobs-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.dsvs-knobs-reset {
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  white-space: nowrap;
+}
+
+.dsvs-knobs-reset:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-knobs-reset {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.1);
+}
+
+.dsvs-knobs-status {
+  opacity: 0.7;
+  text-align: right;
+}

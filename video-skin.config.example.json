@@ -1,0 +1,28 @@
+{
+  "_readme": "把这份文件改名成 video-skin.config.json 放进插件根目录（部署期默认值），或改名成 dsh-video-skin.json 放进 $DSH_HOME（用户级覆盖，优先级更高）。两个文件都可以不存在 —— 缺省值在 lib/config.js 的 DEFAULT_CONFIG 里。**大多数时候你不用碰这个文件**：右下角圆钮点开就是滑块，改完刷新还在（它会把这四个旋钮写进 $DSH_HOME/dsh-video-skin.json）。改文件也一样：透明度和素材刷新页面即生效；开机动画的时长/文案是启动快照，要等下次启动 DSH。",
+  "boot": {
+    "enabled": true,
+    "file": "assets/boot.mp4",
+    "fadeMs": 1500,
+    "skipFadeMs": 320,
+    "holdMs": 18000,
+    "noFrameMs": 6000,
+    "endlessMs": 20000,
+    "hint": "正在启动…",
+    "skipLabel": "点击画面跳过",
+    "sound": true,
+    "volume": 1,
+    "soundLabel": "开启声音"
+  },
+  "background": {
+    "enabled": true,
+    "file": "assets/background.mp4",
+    "veil": 0.14,
+    "surface": 0.2,
+    "surfaceLight": 0.6,
+    "veilLight": 0.1,
+    "controls": true,
+    "delayMs": 1200,
+    "playbackRate": 1
+  }
+}
