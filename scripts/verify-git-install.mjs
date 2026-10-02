@@ -74,8 +74,26 @@ console.log(`临时根  : ${root}`)
 
 try {
   // ① 把**已提交的内容**克隆成裸仓库 —— 这就是 GitHub 上那份，工作区里的未提交改动不算数。
+  //
+  // 这一条只针对**会影响用户装到什么的**改动：运行时文件、素材、清单、patch 行。
+  // docs/scripts/tests/README 改了没提交不影响安装结果 —— 那种情况只提示、不判失败，
+  // 否则"边改文档边预演"会造出一个假红灯。
   const dirty = run('git', ['-C', packageRoot, 'status', '--porcelain'])
-  check(dirty.stdout.trim() === '', '① 工作区干净（远端内容 = 本地提交内容）', { dirty: dirty.stdout.trim().slice(0, 400) })
+  const dirtyPaths = dirty.stdout
+    .split('\n')
+    .map((line) => line.slice(3).trim())
+    .filter((line) => line !== '')
+  const shipped = (relative) =>
+    /^(?:index\.js|package\.json|cordis\.patch\.yml|lib\/|runtime\/|assets\/)/u.test(relative)
+  const dirtyShipped = dirtyPaths.filter(shipped)
+  check(
+    dirtyShipped.length === 0,
+    '① 影响安装内容的改动都已提交（远端 = 本地提交）',
+    { dirtyShipped, dirtyAll: dirtyPaths },
+  )
+  if (dirtyPaths.length > 0 && dirtyShipped.length === 0) {
+    console.warn(`     （有未提交的改动，但都不影响安装内容，按通过处理：${dirtyPaths.join(', ')}）`)
+  }
   const clone = run('git', ['clone', '--bare', '--quiet', packageRoot, remote])
   check(clone.status === 0, '① 裸仓库克隆成功（等价于 GitHub 上那个仓库）', clone.stderr)
 
