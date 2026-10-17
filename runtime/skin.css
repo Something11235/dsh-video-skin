@@ -3,7 +3,8 @@
  *
  * 两件事：
  *   ① 开机动画覆盖层（.dsvs-boot*）——自己带全部样式，不依赖任何主题变量；
- *   ② 聊天背景（#dsvs-backdrop + 界面表面半透明化）。
+ *   ② 聊天背景（#dsvs-backdrop + 界面表面半透明化）——短片与静态图共用同一套铺法，
+ *      所以 `.dsvs-knobs`（面板）里换背景类型时这里一条规则都不用动。
  *
  * 为什么表面半透明化改的是 `--dsw-alias-*` 而不是给某个容器加样式：
  * 内核主题（dsh-client-ui-theme）把整套色板定义在 `body` / `body[data-ds-dark-theme]`
@@ -242,7 +243,11 @@ body:not([data-ds-dark-theme]) #dsvs-backdrop {
   background: #eef1f5;
 }
 
-#dsvs-backdrop-video {
+/* 画面元素：循环短片，或者一张静态图。两者**共用同一套铺法**（裁切铺满 + 淡入），
+   因为它们对下面那层蒙版、对表面半透明化的关系完全一样 —— 换背景只换元素，
+   不动这里的任何一个值。 */
+#dsvs-backdrop-video,
+#dsvs-backdrop-image {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -254,7 +259,8 @@ body:not([data-ds-dark-theme]) #dsvs-backdrop {
   transition: opacity 900ms ease;
 }
 
-#dsvs-backdrop-video[data-shown="1"] {
+#dsvs-backdrop-video[data-shown="1"],
+#dsvs-backdrop-image[data-shown="1"] {
   opacity: 1;
 }
 
@@ -295,14 +301,16 @@ html[data-dsvs="on"] body[data-ds-dark-theme] {
   --dsw-specific-sidebar-fill: rgba(27, 27, 28, var(--dsvs-sidebar, 0.26)) !important;
 }
 
-/* reduced-motion 下不播背景视频（只剩蒙版+半透明表面，观感仍然成立）。 */
+/* reduced-motion 下不播背景视频（只剩蒙版+半透明表面，观感仍然成立）。
+   **静态图不受这条影响**：它没有动效，正是这条设置想要的背景 —— 所以这里精确地
+   只藏短片。 */
 @media (prefers-reduced-motion: reduce) {
   #dsvs-backdrop-video {
     display: none;
   }
 }
 
-/* ─────────────────── ③ 透明度调节（右下角圆钮 + 滑块面板） ─────────────────── */
+/* ─────────────────── ③ 背景调节（右下角圆钮 + 滑块面板） ─────────────────── */
 
 /* 圆钮平时半透明，鼠标靠近才变实 —— 它是一个"需要时找得到、平时不碍事"的入口。 */
 #dsvs-knobs-pill {
@@ -403,11 +411,15 @@ body:not([data-ds-dark-theme]) #dsvs-knobs {
   opacity: 1;
 }
 
+/* 「背景类型」那排按钮和预设那排**长得一样**：都是"几个等宽的小胶囊，选中的亮起来"。
+   分组写选择器而不是复制一份规则：它们必须一直长得一样，复制出来的两份迟早会走样。 */
+.dsvs-knobs-modes,
 .dsvs-knobs-presets {
   display: flex;
   gap: 6px;
 }
 
+.dsvs-knobs-mode,
 .dsvs-knobs-preset {
   flex: 1;
   text-align: center;
@@ -421,15 +433,18 @@ body:not([data-ds-dark-theme]) #dsvs-knobs {
   transition: background 160ms ease, border-color 160ms ease;
 }
 
+body:not([data-ds-dark-theme]) .dsvs-knobs-mode,
 body:not([data-ds-dark-theme]) .dsvs-knobs-preset {
   background: rgba(20, 30, 45, 0.05);
   border-color: rgba(20, 30, 45, 0.1);
 }
 
+.dsvs-knobs-mode:hover,
 .dsvs-knobs-preset:hover {
   background: rgba(255, 255, 255, 0.14);
 }
 
+.dsvs-knobs-mode[data-active="1"],
 .dsvs-knobs-preset[data-active="1"] {
   background: rgba(90, 160, 230, 0.3);
   border-color: rgba(140, 200, 255, 0.6);

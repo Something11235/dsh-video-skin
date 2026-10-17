@@ -14,7 +14,7 @@ github:Something11235/dsh-video-skin#main
 
 | 条件 | 本仓库的状态 | 破坏了会怎样 |
 | --- | --- | --- |
-| **产物已提交**（`index.js` / `lib` / `runtime` / `assets/*.mp4`） | ✅ 全在 git 里 | pnpm clone 下来没有可运行的东西 |
+| **产物已提交**（`index.js` / `lib` / `runtime` / `assets/*.mp4` / `assets/background.jpg`） | ✅ 全在 git 里 | pnpm clone 下来没有可运行的东西 |
 | **不能有 `prepare` / `prepack` / `postinstall`** | ✅ 一个都没有 | pnpm 会拦下 git 依赖的构建脚本：`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，**`dsh plugin add` 直接失败**（哪怕产物已提交） |
 | **`dsh.bundle.patch` + 包名与 patch 行 `name` 一致** | ✅ `cordis.patch.yml` 一行 `insert` | 插件不会成为一层；或者 loader 只 warn 然后跳过（表现是"装上了但没生效"） |
 
@@ -99,10 +99,10 @@ $env:DSH_HOME = $tmp
 ## 更新流程（没有构建步骤，所以 push 即发布）
 
 这个插件**没有构建产物**：`index.js` / `lib` / `runtime` 就是运行时读的文件，
-`assets/*.mp4` 是直接提交的素材。所以：
+`assets/*.mp4` 与 `assets/background.jpg` 是直接提交的素材。所以：
 
 ```powershell
-# 1) 改代码 / 换素材（换素材见 README §8）
+# 1) 改代码 / 换素材（换素材见 README §8；换了短片就顺手跑一次 node scripts/make-still.mjs 得到配套静态图）
 # 2) 跑一遍自检
 node scripts/check-syntax.mjs
 node --test "tests/**/*.test.mjs"

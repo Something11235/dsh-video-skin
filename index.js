@@ -4,7 +4,8 @@
  * 两件事，仅此而已：
  *   ① 给 `webserver/index-inject` 贡献两行结构化注入（样式 + 运行时脚本），
  *      它们在页面加载时把 **开机动画覆盖层** 和 **聊天背景层** 挂上去；
- *   ② 用带 Range 的路由把两个素材和一份运行期配置提供给浏览器。
+ *   ② 用带 Range 的路由把三个素材（开机短片 / 背景短片 / 背景静态图）和一份运行期配置
+ *      提供给浏览器。
  *
  * 设计取舍（每条都是为了"插件出问题时不能连累 DSH 起来"）：
  *   - `inject` 是空数组，且**不 import 任何 DSH 包**（连 schemastery 都不 import）。
@@ -23,7 +24,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { loadConfig, resolveDshHome, clearOverride, writeOverride, OVERRIDE_KEYS } from './lib/config.js'
+import { loadConfig, resolveDshHome, clearOverride, writeOverride, OVERRIDE_KEYS, isBackgroundMode } from './lib/config.js'
 import { buildInjectionRows } from './lib/injections.js'
 import { contentTypeFor, isPlainObject, parseRange } from './lib/route.js'
 
@@ -37,8 +38,15 @@ export const inject = []
 export const ROUTE_PREFIX = '/dsh-video-skin'
 /** 开机动画素材。 */
 export const BOOT_ROUTE = `${ROUTE_PREFIX}/boot.mp4`
-/** 聊天背景素材。 */
+/** 聊天背景素材（短片）。 */
 export const BACKGROUND_ROUTE = `${ROUTE_PREFIX}/background.mp4`
+/**
+ * 聊天背景素材（静态图）。
+ *
+ * 路由名**故意不带扩展名**：图可以是 jpg / png / webp / avif，`Content-Type` 由真实
+ * 落地文件的扩展名决定（见 `contentTypeFor`）。带个 `.jpg` 的路由名反而会撒谎。
+ */
+export const IMAGE_ROUTE = `${ROUTE_PREFIX}/background-image`
 /** 运行期配置（允许"改 JSON + 刷新页面"即生效）。 */
 export const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 /** 界面滑块写回的位置（POST 保存 / DELETE 恢复默认）。 */
@@ -51,6 +59,7 @@ export const VERSION = '0.1.1'
 const ROUTES = Object.freeze({
   boot: BOOT_ROUTE,
   background: BACKGROUND_ROUTE,
+  image: IMAGE_ROUTE,
   config: CONFIG_ROUTE,
   override: OVERRIDE_ROUTE,
 })
@@ -58,7 +67,7 @@ const ROUTES = Object.freeze({
 /** 运行时文本文件所在目录（相对包根）。 */
 const RUNTIME_DIR = 'runtime'
 
-/** 滑块写回请求体的上限：只收四个数字，给足余量但绝不无限读。 */
+/** 滑块写回请求体的上限：只收四个数字 + 一个背景类型，给足余量但绝不无限读。 */
 const OVERRIDE_BODY_LIMIT = 4096
 
 /**
@@ -246,7 +255,7 @@ export function apply(ctx) {
       /**
        * 素材路由：每次请求都重新解析配置，所以换素材文件后刷新即可，无需重启。
        * @param {string} route 路由路径。
-       * @param {'boot' | 'background'} key 配置里的功能名。
+       * @param {'boot' | 'background' | 'image'} key 配置解析结果里 `paths` 的键名。
        */
       const registerAsset = (route, key) => {
         disposers.push(
@@ -273,6 +282,7 @@ export function apply(ctx) {
 
       registerAsset(BOOT_ROUTE, 'boot')
       registerAsset(BACKGROUND_ROUTE, 'background')
+      registerAsset(IMAGE_ROUTE, 'image')
 
       // 界面滑块的写回端点。
       //
@@ -366,7 +376,7 @@ export function apply(ctx) {
               // 只认真实存在的数字，并且夹到合法区间 —— 这里收的是页面来的值，
               // 但一个会写文件的端点不该把校验外包给调用方。
               const source = isPlainObject(parsed?.background) ? parsed.background : parsed
-              /** @type {Record<string, number>} */
+              /** @type {Record<string, unknown>} */
               const patch = {}
               for (const key of OVERRIDE_KEYS) {
                 const value = source?.[key]
@@ -376,8 +386,11 @@ export function apply(ctx) {
                     ? Math.min(0.92, Math.max(0, value))
                     : Math.min(1, Math.max(0, value))
               }
+              // 背景类型是唯一的字符串覆盖项：只有两个合法字面量能被写下去。
+              // `writeOverride` 里还会再过滤一次 —— 这里先拒，是为了让响应能说清"为什么没生效"。
+              if (isBackgroundMode(source?.mode)) patch.mode = source.mode
               if (Object.keys(patch).length === 0) {
-                reply(400, { ok: false, error: `no numeric ${OVERRIDE_KEYS.join('/')} in body` })
+                reply(400, { ok: false, error: `no numeric ${OVERRIDE_KEYS.join('/')} or mode in body` })
                 return
               }
               try {
@@ -407,7 +420,14 @@ export function apply(ctx) {
     for (const warning of warnings) warn(warning)
     const parts = []
     parts.push(client.boot.enabled ? `开机动画 ${client.boot.src}` : '开机动画 关闭')
-    parts.push(client.background.enabled ? `聊天背景 ${client.background.src}` : '聊天背景 关闭')
+    const bg = client.background
+    // 日志里写**真正会被用到的那个素材**：背景类型是静态图时，短片地址印出来会误导排查。
+    const bgUsed = bg.mode === 'image' ? bg.imageSrc : bg.src
+    parts.push(
+      bg.enabled
+        ? `聊天背景 ${bg.mode === 'image' ? '静态图' : '短片'} ${bgUsed}`
+        : '聊天背景 关闭',
+    )
     info(
       `已就绪：${parts.join(' · ')}（配置来源：${sources.length === 0 ? '默认值' : sources.join(' → ')}）`,
     )

@@ -1,6 +1,6 @@
 # dsh-video-skin
 
-**DSH 视频皮肤**：一段短片循环铺成整个界面的**聊天背景**（无声、透明度界面里就能调），
+**DSH 视频皮肤**：一段短片循环铺成整个界面的**聊天背景**（也可以一键换成**一张静态图**；无声、透明度界面里就能调），
 另一段做**有声的开机动画**（片尾交叉溶解进界面、**点击画面随时跳过**）。**零依赖**。
 
 ## 安装（Install）
@@ -15,18 +15,20 @@ github:Something11235/dsh-video-skin#main
 > 才会生效（刷新页面不够）。卸载：`dsh plugin --profile <你的 profile> remove dsh-video-skin`，
 > 或者用仓库里的 `scripts/uninstall.ps1`。
 
-装好之后：右下角会出现一个半透明小圆钮，点开就是**透明度滑块**（调完刷新还在，不用重启）；
-启动时会先播放开机动画，**点一下画面**就跳过。
+装好之后：右下角会出现一个半透明小圆钮，点开就是**背景面板**（第一行换"视频背景 / 静态图"，
+下面是透明度滑块；调完刷新还在，不用重启）；启动时会先播放开机动画，**点一下画面**就跳过。
 
 English: install `github:Something11235/dsh-video-skin#main` from **Settings → Plugins → Add plugin**,
-then **fully quit and relaunch DSH**. A small pill appears in the bottom-right corner for the
-transparency sliders; click anywhere during the boot animation to skip it.
+then **fully quit and relaunch DSH**. A small pill appears in the bottom-right corner: its panel switches
+the backdrop between the looping clip and a still image, and holds the transparency sliders; click
+anywhere during the boot animation to skip it.
 
 ---
 
-A **video skin** for DSH: one clip becomes a looping, silent **video backdrop** behind the whole Web UI,
-and a second clip becomes a **boot animation** — **played with sound**, **played through to its end**,
-then fading into the app, and **skippable with a click**.
+A **video skin** for DSH: one clip becomes a looping, silent **video backdrop** behind the whole Web UI
+(or, with one click, a **still image** becomes the backdrop), and a second clip becomes a **boot
+animation** — **played with sound**, **played through to its end**, then fading into the app, and
+**skippable with a click**.
 
 - Boot animation: full-window clip **with audio**, a progress bar driven by the kernel's real activation
   progress, and a permanent “click to skip” pill. The clip **finishes first** (`ended`), then the overlay
@@ -34,10 +36,12 @@ then fading into the app, and **skippable with a click**.
   > Earlier builds cross-dissolved over the clip's tail and used the *actual remaining time* as the fade
   > duration — when the app became ready late that left only 100–200 ms, which read as a **hard cut**.
   > Default is now `exitMode: 'end'`; `exitMode: 'tail'` restores the crossfade (still with a fixed fade).
-- Backdrop: silent, looping, `object-fit: cover`, with the app's surface tokens made translucent —
-  **the picture is clearly visible** and the text stays readable.
-- A **transparency slider in the UI** (bottom-right pill): two sliders, three presets, and a live
-  body-text contrast readout; changes apply on refresh with no DSH restart.
+- Backdrop: silent, `object-fit: cover`, with the app's surface tokens made translucent —
+  **the picture is clearly visible** and the text stays readable. The picture is a **looping clip** or a
+  **still image**; the same panel switches between them, and both share the scrim, the surface values and
+  the contrast readout (see [Static background](#static-background)).
+- A **backdrop panel in the UI** (bottom-right pill): the clip/still switch, two sliders, three presets, and
+  a live body-text contrast readout; changes apply on refresh with no DSH restart.
 - **Zero dependencies.** The host half imports only `node:` builtins; the browser half is one inline
   script. Nothing in the built artifact has an `import` — which is also why a plain `github:` install
   works with **no build step and no `prepare` script**.
@@ -78,19 +82,48 @@ an equally thin *white* surface drops dark text below 3:1. Measured in a real br
 
 p5 (the 95% of frame area) is the meaningful readability number; `--sweep` prints this table live.
 
+## Static background
+
+`background.mode` is `video` (default) or `image`. The panel's first row switches it **live** — no reload,
+no restart — and the choice is persisted as `background.mode` next to the four opacity knobs.
+
+- **A still costs nothing to keep on screen.** The clip is a permanent decode loop; a JPEG is decoded once.
+  This is the lightest setting that still looks like the same skin.
+- **It complements `prefers-reduced-motion`, it does not replace it.** With reduced motion the clip is
+  *not played* (unchanged), while the still **still shows** — a picture that does not move is exactly what
+  that setting asks for. Switching back to the clip on such a machine is **refused, and the panel says
+  why** (the refused choice is not written to disk either).
+- **Both pictures share one set of numbers.** The scrim (`veil`), the surfaces (`surface` / `surfaceLight`)
+  and the contrast readout mean the same thing for either (“picture → scrim → surface”), so switching
+  never means re-tuning. The shipped still is **a frame taken from the shipped clip**
+  (`scripts/make-still.mjs`), so its brightness distribution — and the measured table above — still holds.
+- **Switching only swaps the element** inside the layer (`<video>` ↔ `<img>`): layer, scrim, translucent
+  surfaces and the panel are not rebuilt, so nothing blinks and the panel does not vanish under the cursor.
+- **A click is instant.** `delayMs` only delays the **first** fetch after boot (leaving the bandwidth to
+  the UI); a switch requested by the user does not wait for it — waiting 1.2 s there just makes the click
+  look dead, with nothing but the base colour on screen.
+
+Edge cases, all deliberate: a `mode: "image"` whose file is missing **falls back to the clip** (the host
+warns; `imageSrc` stays empty, so the panel does not render a dead switch); the still route is
+`/dsh-video-skin/background-image` with **no extension** (`Content-Type` comes from the real file, so png
+and webp work too); a still that fails to decode **tears the translucent surfaces down**, exactly like a
+broken clip.
+
 ## Tuning it in the UI
 
-A small half-transparent pill sits in the bottom-right corner. Clicking it opens a panel with two
-sliders (panel opacity / video scrim), three presets, a **live body-text contrast readout** measured from
-the current video frame, and a reset button.
+A small half-transparent pill sits in the bottom-right corner. Clicking it opens a panel: the
+**clip / still switch**, two sliders (panel opacity / picture scrim), three presets, a **live body-text
+contrast readout** measured from the current picture, and a reset button.
 
-- Dragging applies immediately; releasing writes to `$DSH_HOME/dsh-video-skin.json` through a
-  `POST`/`DELETE /dsh-video-skin/override` route. Only those four knobs are written; everything else in
-  the file is preserved. A **refresh** picks the values up (no DSH restart), and the file stays
-  hand-editable.
+- Switching the picture type applies and persists on the **single click** (it is a discrete choice); the
+  sliders apply while dragging and write on release, so a drag does not fire dozens of requests.
+- Both go through `POST`/`DELETE /dsh-video-skin/override` into `$DSH_HOME/dsh-video-skin.json`, and
+  **only those four knobs plus the picture type** are written; everything else in the file is preserved.
+  A **refresh** picks the values up (no DSH restart), and the file stays hand-editable.
 - A file rather than `localStorage`: the desktop page is served from the `dsh-app://` scheme, where Web
   Storage availability is not guaranteed.
 - If the write fails (read-only home), the panel says so — it does not pretend to have saved.
+- **Reset** clears the four knobs **and** the picture type: “reset” means the whole backdrop, not half of it.
 - `Esc` or a click outside closes the panel; `Alt+B` toggles it; `background.controls: false` removes it.
 - The pill sits at `z-index: 900`, **below** the kernel's `Modal` overlay (1000) on purpose: a modal
   should cover everything, and a wallpaper control must not steal its clicks.
@@ -121,11 +154,12 @@ startup snapshot, so those need a restart.
 ```json
 {
   "boot":       { "enabled": true, "fadeMs": 1000, "exitMode": "end", "skipFadeMs": 320, "holdMs": 18000, "hint": "点击画面跳过" },
-  "background": { "enabled": true, "veil": 0.32, "surface": 0.5, "delayMs": 1200, "playbackRate": 1 }
+  "background": { "enabled": true, "mode": "video", "image": "assets/background.jpg", "veil": 0.14, "surface": 0.2, "delayMs": 1200, "playbackRate": 1 }
 }
 ```
 
-`veil` (scrim over the video) and `surface` (opacity of the app's `--dsw-alias-*` surfaces) are the two
+`mode` picks the picture (`video` = the looping clip, `image` = `image` instead of `file`).
+`veil` (scrim over the picture) and `surface` (opacity of the app's `--dsw-alias-*` surfaces) are the two
 knobs that trade picture strength against text readability.
 
 ## How it is wired
@@ -133,9 +167,15 @@ knobs that trade picture strength against text readability.
 ```
 Host half
   ├─ ctx.on('webserver/index-inject', table => table.push(styleRow, scriptRow))  ← first thing in apply()
-  └─ ctx.inject(['webServer'], …) → /dsh-video-skin/{boot.mp4,background.mp4,config.json}
+  └─ ctx.inject(['webServer'], …) → /dsh-video-skin/{boot.mp4,background.mp4,background-image}
                                     with Range / ETag / 206 / 416 / HEAD
+                                  + /dsh-video-skin/config.json (no-store)
+                                  + /dsh-video-skin/override    (POST save / DELETE reset)
 ```
+
+`background-image` carries **no extension** on purpose: the still may be jpg/png/webp, and `Content-Type`
+is derived from the file that is actually on disk — a `.jpg` route name would start lying the moment
+someone drops in a png, and a `Content-Type` that disagrees with the bytes gets rejected by the browser.
 
 Three constraints that must not be broken (each one was paid for):
 
@@ -147,14 +187,20 @@ Three constraints that must not be broken (each one was paid for):
    boot DOM (`:scope > [data-dsh-boot]`); inserting a node there breaks hydration.
 
 The backdrop is a `position: fixed; z-index: -1` first child of `body`, so nothing in the app needs a
-`z-index` and no pointer interaction is blocked.
+`z-index` and no pointer interaction is blocked. Inside that layer sits a `<video>` or an `<img>`
+(depending on `background.mode`); both use the **same** rules — `object-fit: cover` plus a `data-shown`
+fade-in — which is why switching the picture type touches **no CSS at all**, and why “don't show a
+half-loaded picture” is one guarantee instead of two.
 
 ## Verify
 
 ```powershell
-node scripts/check-syntax.mjs
-node --test "tests/**/*.test.mjs"
-node scripts/verify-all.mjs
+node scripts/check-syntax.mjs       # ESM evaluates + injected text parses
+node --test "tests/**/*.test.mjs"   # 103 cases
+node scripts/verify-all.mjs         # the two above + asset / packaging / patch contracts (17 checks)
+
+# the shipped still, regenerated from the shipped clip (no ffmpeg needed):
+node scripts/make-still.mjs
 ```
 
 `tests/runtime.test.mjs` runs the injected script inside a stub DOM with a virtual clock and asserts the

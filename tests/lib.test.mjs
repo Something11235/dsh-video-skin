@@ -21,12 +21,16 @@ import {
   toInlineJson,
 } from '../lib/route.js'
 import {
+  BACKGROUND_MODES,
   DEFAULT_CONFIG,
   HOME_CONFIG_FILE,
   OVERRIDE_KEYS,
+  OVERRIDE_MODE_KEY,
   PACKAGE_CONFIG_FILE,
   clearOverride,
+  isBackgroundMode,
   loadRawConfig,
+  normalizeMode,
   readOverride,
   resolveConfig,
   resolveDshHome,
@@ -39,6 +43,7 @@ const packageRoot = path.resolve(here, '..')
 const ROUTES = {
   boot: '/dsh-video-skin/boot.mp4',
   background: '/dsh-video-skin/background.mp4',
+  image: '/dsh-video-skin/background-image',
   config: '/dsh-video-skin/config.json',
   override: '/dsh-video-skin/override',
 }
@@ -122,6 +127,11 @@ test('resolveConfig 默认值：素材解析成路由，可调项取默认', () 
   assert.equal(client.background.surface, DEFAULT_CONFIG.background.surface)
   assert.ok(paths.boot.endsWith(path.join('assets', 'boot.mp4')))
   assert.ok(paths.background.endsWith(path.join('assets', 'background.mp4')))
+  // 背景类型默认是循环短片；静态图**同时**给好地址，面板才切得过去。
+  assert.equal(client.background.mode, 'video')
+  assert.equal(client.background.mode, DEFAULT_CONFIG.background.mode)
+  assert.equal(client.background.imageSrc, ROUTES.image)
+  assert.ok(paths.image.endsWith(path.join('assets', 'background.jpg')))
   // 用户要求：开机动画要有声音、聊天背景要看得清画面。
   assert.equal(client.boot.sound, true)
   assert.equal(client.boot.volume, 1)
@@ -173,6 +183,46 @@ test('resolveConfig 尊重 enabled:false', () => {
   const { client } = resolve({ boot: { enabled: false }, background: { enabled: false } })
   assert.equal(client.boot.enabled, false)
   assert.equal(client.background.enabled, false)
+})
+
+// ─────────────────── 背景类型（短片 / 静态图） ───────────────────
+
+test('背景类型只认 video/image，脏值退回默认', () => {
+  assert.deepEqual([...BACKGROUND_MODES], ['video', 'image'])
+  assert.equal(isBackgroundMode('video'), true)
+  assert.equal(isBackgroundMode('image'), true)
+  assert.equal(isBackgroundMode('IMAGE'), false, '大小写敏感：写错了要退回默认，而不是猜')
+  assert.equal(isBackgroundMode(1), false)
+  assert.equal(normalizeMode('image'), 'image')
+  assert.equal(normalizeMode('nope'), 'video')
+  assert.equal(normalizeMode(undefined, 'image'), 'image')
+  assert.equal(resolve({ background: { mode: 'image' } }).client.background.mode, 'image')
+  assert.equal(resolve({ background: { mode: 'gif' } }).client.background.mode, 'video')
+})
+
+test('mode:image 用的就是静态图，短片地址仍给着（面板要能切回去）', () => {
+  const { client, paths, warnings } = resolve({ background: { mode: 'image' } })
+  assert.deepEqual(warnings, [])
+  assert.equal(client.background.enabled, true)
+  assert.equal(client.background.mode, 'image')
+  assert.equal(client.background.imageSrc, ROUTES.image)
+  assert.equal(client.background.src, ROUTES.background, '短片地址不能因为切了类型就消失')
+  assert.ok(paths.image.endsWith(path.join('assets', 'background.jpg')))
+})
+
+test('mode:image 但图不在盘上：退回短片并给出警告，而不是留一块空背景', () => {
+  const { client, warnings } = resolve({ background: { mode: 'image', image: 'assets/gone.jpg' } })
+  assert.equal(client.background.mode, 'video', '退回短片')
+  assert.equal(client.background.imageSrc, '', '地址留空 ⇒ 面板不显示那排切换按钮')
+  assert.equal(client.background.enabled, true, '短片还在，背景不该整体降级')
+  assert.match(warnings.join(' '), /background\.image: missing on disk/u)
+  assert.match(warnings.join(' '), /退回 video/u)
+})
+
+test('mode:image 时静态图路径同样拒绝逃出包', () => {
+  const { client, warnings } = resolve({ background: { mode: 'image', image: '../../../../.credentials.yaml' } })
+  assert.equal(client.background.mode, 'video')
+  assert.match(warnings.join(' '), /escapes/u)
 })
 
 test('resolveDshHome 优先环境变量，其次 ~/.dsh', () => {
@@ -266,6 +316,40 @@ test('readOverride 只认可写的四个键，且只认有限数', () => {
   assert.deepEqual(readOverride(home), { surface: 0.4, veilLight: 0.2 })
   assert.deepEqual(readOverride(''), {}, '空 homeDir 直接返回空')
   assert.deepEqual([...OVERRIDE_KEYS].sort(), ['surface', 'surfaceLight', 'veil', 'veilLight'])
+})
+
+test('writeOverride 收下背景类型这个字符串，且只认合法的两个字面量', () => {
+  const home = tmpdir()
+  const { raw } = writeOverride({ homeDir: home, patch: { mode: 'image' } })
+  assert.equal(raw.background.mode, 'image')
+  assert.deepEqual(readOverride(home), { mode: 'image' })
+
+  const dirty = writeOverride({ homeDir: home, patch: { mode: 'hack', surface: 0.3 } })
+  assert.equal(dirty.raw.background.mode, 'image', '脏值不该覆盖已有的合法值')
+  assert.equal(dirty.raw.background.surface, 0.3, '同一份 patch 里的数字照常写入')
+  // `mode` 是字符串，不能混进那个"夹到 0..1"的数值白名单里（混进去夹取就失去意义了）。
+  assert.equal(OVERRIDE_MODE_KEY, 'mode')
+  assert.equal(OVERRIDE_KEYS.includes('mode'), false)
+})
+
+test('clearOverride 把背景类型一起摘掉（恢复默认是恢复整块背景）', () => {
+  const home = tmpdir()
+  fs.writeFileSync(
+    path.join(home, HOME_CONFIG_FILE),
+    JSON.stringify({ background: { mode: 'image', surface: 0.9, delayMs: 700 }, boot: { volume: 0.5 } }),
+  )
+  const { raw } = clearOverride(home)
+  assert.deepEqual(raw.background, { delayMs: 700 })
+  assert.deepEqual(readOverride(home), {})
+})
+
+test('写回的类型经过 resolveConfig 后真的生效（开关 → 文件 → 页面）', () => {
+  const home = tmpdir()
+  writeOverride({ homeDir: home, patch: { mode: 'image' } })
+  const { config } = loadRawConfig({ packageRoot, homeDir: home })
+  const { client } = resolveConfig(config, { packageRoot, routes: ROUTES, version: 'test' })
+  assert.equal(client.background.mode, 'image')
+  assert.equal(client.background.imageSrc, ROUTES.image)
 })
 
 test('写回的值经过 resolveConfig 后真的生效（滑块 → 文件 → 页面）', () => {
