@@ -15,7 +15,9 @@
  *
  * 它做的两件事：
  *   ① 开机动画：一屏全窗短片，片尾交叉溶解进界面，点击/按键随时跳过；
- *   ② 聊天背景：短片循环铺满视口，界面表面半透明化（见 skin.css），视频**无声音**。
+ *   ② 聊天背景：循环短片**或一张静态图**铺满视口，界面表面半透明化（见 skin.css），
+ *      两者都**没有声音**，并且共用同一个蒙版/同一套表面值/同一个对比度读数 ——
+ *      面板上那排「视频背景 / 静态图」按钮随时换（换的只是层里的那个元素）。
  *
  * 设计原则（都来自踩过的坑）：
  *   - 这块屏是装饰品，**没有任何一种失败可以合理地扣住用户**：素材请求挂住、片子
@@ -55,17 +57,41 @@
       clipDone: false,
       appReady: false,
       entered: false,
+      /** 当前背景类型：`video` = 循环短片，`image` = 静态图；背景层没建时是 null。 */
+      mode: null,
       reason: null,
       failures: [],
       lastStallAt: null,
     },
-    /** 重新应用一次可运行时变更的项（蒙版/表面不透明度/背景素材）。 */
+    /**
+     * 重新应用一次可运行时变更的项（蒙版/表面不透明度/背景素材）。
+     *
+     * 配置里的背景类型也变了的时候，顺手把层里的元素换掉 —— 否则"配置写着静态图、
+     * 层里还是短片"会变成一个只在构造顺序上才说得通的状态。
+     */
     applyLive: function (next) {
       if (isObject(next)) {
         liveCfg = mergeConfig(liveCfg, next)
         api.config = liveCfg
       }
-      if (backdrop !== null) applyVisuals(liveCfg)
+      if (backdrop !== null) {
+        applyVisuals(liveCfg)
+        var wanted = backdropKind(liveCfg)
+        if (wanted !== backdrop.kind && mediaSrcFor(liveCfg, wanted) !== '') {
+          var switched = setBackgroundKind(wanted)
+          if (!switched.ok) api.state.failures.push('live-switch-refused:' + switched.reason)
+        }
+      }
+    },
+    /**
+     * 换背景素材：短片 ↔ 静态图。
+     *
+     * 面板上那排按钮走的就是它，端到端脚本也用同一个入口（同一套行为，不是两份实现）。
+     * @param {'video' | 'image'} mode 目标类型。
+     * @returns {{ ok: boolean, kind: 'video' | 'image', reason: string }} 结果；`reason` 空串 = 成功。
+     */
+    setBackgroundMode: function (mode) {
+      return setBackgroundKind(mode)
     },
     /** 拆掉背景层并把界面恢复成原生样式。 */
     teardown: teardownBackdrop,
@@ -573,6 +599,7 @@
           'diag phase=' + api.state.phase +
           ' ready=' + (state.appReady ? 1 : 0) +
           ' done=' + (state.clipDone ? 1 : 0) +
+          ' mode=' + (api.state.mode || '-') +
           ' t=' + (video ? (video.currentTime || 0).toFixed(2) : '-') +
           ' dur=' + (video && isFinite(video.duration) ? video.duration.toFixed(2) : '?') +
           ' rs=' + (video ? video.readyState : '-') +
@@ -829,6 +856,50 @@
 
   // ─────────────────────────── ② 聊天背景 ───────────────────────────
 
+  /**
+   * 系统是不是要求"减少动态效果"。
+   *
+   * 这条设置管的主要是**常驻循环的动画**，所以它只否决短片那一种背景：静态图没有动效，
+   * 在 reduced-motion 下照常显示 —— 一台要求少动的机器上，"一张不动的图"正是它想要的。
+   * @returns {boolean} 是否要求减少动态效果。
+   */
+  function reducedMotion() {
+    try {
+      return (
+        typeof global.matchMedia === 'function' &&
+        global.matchMedia('(prefers-reduced-motion: reduce)').matches
+      )
+    } catch (error) {
+      return false
+    }
+  }
+
+  /**
+   * 实际该用哪种背景。
+   *
+   * 配置写着 `image` 但宿主没给出静态图地址（图不在盘上时宿主会把它退回 `video`，地址为空）
+   * 时也退回短片：宁可按老样子跑，也不要留一块什么都没有的背景。
+   * @param {Record<string, unknown>} config 配置。
+   * @returns {'video' | 'image'} 背景类型。
+   */
+  function backdropKind(config) {
+    var bg = isObject(config.background) ? config.background : {}
+    if (bg.mode !== 'image') return 'video'
+    return typeof bg.imageSrc === 'string' && bg.imageSrc !== '' ? 'image' : 'video'
+  }
+
+  /**
+   * 某种背景类型的素材地址。
+   * @param {Record<string, unknown>} config 配置。
+   * @param {'video' | 'image'} kind 背景类型。
+   * @returns {string} 地址；空串 = 这个类型不可用。
+   */
+  function mediaSrcFor(config, kind) {
+    var bg = isObject(config.background) ? config.background : {}
+    var value = kind === 'image' ? bg.imageSrc : bg.src
+    return typeof value === 'string' ? value : ''
+  }
+
   function applyVisuals(config) {
     var bg = isObject(config.background) ? config.background : {}
     var surface = num(bg.surface, 0.2, 0, 1)
@@ -857,18 +928,190 @@
     }
   }
 
+  /**
+   * 把背景层里的媒体元素摘下来。
+   *
+   * 短片要 `pause()` 之后再摘：只从 DOM 移除并不会停掉解码，还在播的 <video> 会继续
+   * 占 CPU 和网络，直到元素被回收。图没有"暂停"这回事，所以只清 `src`。
+   * @param {any} media 媒体元素（可能是 null）。
+   */
+  function disposeMedia(media) {
+    if (media === null || media === undefined) return
+    try {
+      if (typeof media.pause === 'function') media.pause()
+      media.removeAttribute('src')
+    } catch (error) {
+      /* 尽力而为 */
+    }
+    try {
+      if (media.parentNode) media.parentNode.removeChild(media)
+    } catch (error) {
+      /* 尽力而为 */
+    }
+  }
+
+  /** 背景层里当前那个媒体元素（短片或静态图）。 */
+  function currentMedia() {
+    return backdrop === null ? null : backdrop.media
+  }
+
+  /**
+   * 媒体元素是不是已经能出画面了。
+   *
+   * 两种元素的"就绪"判据不一样，而且**不能用别的近似**：图的 `readyState` 不存在，
+   * 短片的 `naturalWidth` 也不存在。用错了就是"元素在、画面不可见"这种最难查的状态。
+   * @param {any} media 媒体元素。
+   * @returns {boolean} 是否已就绪。
+   */
+  function mediaReady(media) {
+    if (media === null || media === undefined) return false
+    if (String(media.tagName).toUpperCase() === 'IMG') {
+      return media.complete === true && Number(media.naturalWidth) > 0
+    }
+    return Number(media.readyState) >= 2
+  }
+
+  /**
+   * 建媒体元素。
+   *
+   * 两种背景**共用**同一套"铺满视口 + 靠 `data-shown` 淡入"的做法（见 skin.css），
+   * 所以这里只差元素本身：短片要静音、循环、`playsinline`（无声是用户要求），
+   * 静态图是装饰，所以 `alt` 为空、`aria-hidden`。
+   * @param {'video' | 'image'} kind 背景类型。
+   * @returns {any} 元素。
+   */
+  function makeMedia(kind) {
+    if (kind === 'image') {
+      var image = doc.createElement('img')
+      image.id = 'dsvs-backdrop-image'
+      image.alt = ''
+      image.decoding = 'async'
+      image.setAttribute('aria-hidden', 'true')
+      return image
+    }
+    var video = doc.createElement('video')
+    video.id = 'dsvs-backdrop-video'
+    video.muted = true
+    video.defaultMuted = true
+    video.loop = true
+    video.playsInline = true
+    video.autoplay = false
+    video.preload = 'none'
+    video.setAttribute('playsinline', '')
+    video.setAttribute('muted', '')
+    video.setAttribute('aria-hidden', 'true')
+    return video
+  }
+
+  /**
+   * 把某种背景的元素装进层里（层本身已经在了）。
+   *
+   * 取素材默认延后 `delayMs`：开机阶段把带宽留给界面。
+   *
+   * 但**用户主动换背景时不延后**（`immediate`）：那个延迟是为了不和开机抢带宽，而用户能点到
+   * 那排按钮时界面早就就绪了 —— 再等 1.2 秒才去取素材，点击看起来就是"没反应"（这中间
+   * 层里只剩底色）。这是两份不同的意图，所以用一个显式参数分开，而不是把 `delayMs` 调小。
+   * @param {'video' | 'image'} kind 背景类型。
+   * @param {boolean} [immediate] 是否立刻取素材（用户主动切换时为 true）。
+   * @returns {any} 装好的元素；装不上就是 null。
+   */
+  function mountMedia(kind, immediate) {
+    if (backdrop === null) return null
+    var src = mediaSrcFor(liveCfg, kind)
+    if (src === '') return null
+    var bg = isObject(liveCfg.background) ? liveCfg.background : {}
+    var media = makeMedia(kind)
+    backdrop.media = media
+    // 插在蒙版**之前**：蒙版是压在画面上的一层，顺序反了就等于没有蒙版。
+    backdrop.layer.insertBefore(media, backdrop.veil)
+
+    var shown = function () {
+      if (backdrop === null || backdrop.media !== media) return
+      media.setAttribute('data-shown', '1')
+    }
+    // 短片出画面是 `loadeddata`，图是 `load`。两个都挂：挂错的那一个永远不会触发，
+    // 而正确的那个一定会 —— 比"按 kind 分支挂一个"少一处可以写错的地方。
+    media.addEventListener('load', shown)
+    media.addEventListener('loadeddata', shown)
+    media.addEventListener('error', function () {
+      // **已经被换下来**的元素报错不算数：换背景时旧元素是被中断的（`pause()` + 摘掉 src），
+      // 真实世界里一次被中断的下载完全可能补报一个 error。拿它去拆现在的背景，就等于
+      // "换了个背景，过一会儿整个皮肤自己没了"。
+      if (backdrop === null || backdrop.media !== media) return
+      // 素材拿不到就必须撤掉半透明表面，否则界面会变成"没有背景、字还发灰"。
+      var detail = kind === 'image' ? 'image' : media.error ? media.error.code : 0
+      api.state.failures.push('backdrop-error:' + detail)
+      teardownBackdrop()
+    })
+
+    var load = function () {
+      if (backdrop === null || backdrop.media !== media) return
+      if (kind === 'video') {
+        try {
+          media.playbackRate = num(bg.playbackRate, 1, 0.25, 4)
+        } catch (error) {
+          /* 有的实现不允许在 metadata 之前设置 */
+        }
+      }
+      media.src = src
+      // 命中缓存时 `load` 可能抢在我们拿到控制权之前就过去了 —— 补一次同步判定，
+      // 否则这张图会永远停在 opacity:0 上（元素在、画面看不见，属于最难查的那一类）。
+      if (mediaReady(media)) shown()
+      if (kind === 'video') {
+        var played = media.play()
+        if (played && typeof played.catch === 'function') played.catch(noop)
+      }
+    }
+    backdrop.delayTimer = global.setTimeout(load, immediate === true ? 0 : num(bg.delayMs, 1200, 0, 60000))
+
+    // 面板的对比度读数要跟着新元素走：换背景之后，旧监听器指向的是已经被摘掉的元素。
+    if (controlsMediaHook !== null) controlsMediaHook(media)
+    return media
+  }
+
+  /**
+   * 换背景素材：短片 ↔ 静态图，**立刻**生效。
+   *
+   * 只换层里的那个元素，层/蒙版/半透明表面/透明度面板全都不动 —— 它们的语义对两种背景
+   * 是同一套（"蒙版压在画面上、表面盖在蒙版上"），重建整层只会让面板在用户脚底下消失一次。
+   *
+   * 唯一会被否决的切换是"在要求减少动态效果的机器上换回短片"：那不是素材问题，是用户的
+   * 无障碍设置，所以如实拒绝并给出原因，而不是偷偷把它播起来。
+   * @param {'video' | 'image'} mode 目标类型。
+   * @returns {{ ok: boolean, kind: 'video' | 'image', reason: string }} 结果；`reason` 空串 = 成功。
+   */
+  function setBackgroundKind(mode) {
+    var kind = mode === 'image' ? 'image' : 'video'
+    var current = backdrop === null ? kind : backdrop.kind
+    var next = mergeConfig(liveCfg, { background: { mode: kind } })
+    if (mediaSrcFor(next, kind) === '') return { ok: false, kind: current, reason: 'no-src' }
+    if (kind === 'video' && reducedMotion()) return { ok: false, kind: current, reason: 'reduced-motion' }
+    liveCfg = next
+    api.config = liveCfg
+    // 背景层还没建（开机动画还在放）时只记下这个选择：建层时自然会按它走。
+    if (backdrop === null) return { ok: true, kind: kind, reason: '' }
+    if (kind !== backdrop.kind) {
+      var old = backdrop.media
+      backdrop.media = null
+      backdrop.kind = kind
+      api.state.mode = kind
+      if (backdrop.delayTimer !== null) global.clearTimeout(backdrop.delayTimer)
+      disposeMedia(old)
+      // 立刻取素材：用户已经点了，界面也早就就绪，这时候再"把带宽留给界面"就是让点击没反应。
+      mountMedia(kind, true)
+    }
+    return { ok: true, kind: kind, reason: '' }
+  }
+
   function teardownBackdrop() {
     if (backdrop === null) return
     try {
-      if (backdrop.video) {
-        try {
-          backdrop.video.pause()
-        } catch (error) {
-          /* 已经停了 */
-        }
-        backdrop.video.removeAttribute('src')
-      }
+      if (backdrop.delayTimer !== null) global.clearTimeout(backdrop.delayTimer)
+      disposeMedia(backdrop.media)
       if (backdrop.layer && backdrop.layer.parentNode) backdrop.layer.parentNode.removeChild(backdrop.layer)
+      if (typeof backdrop.onVisibility === 'function') {
+        doc.removeEventListener('visibilitychange', backdrop.onVisibility)
+      }
     } catch (error) {
       /* 尽力而为 */
     }
@@ -886,6 +1129,7 @@
         }
       }
       knobListeners.length = 0
+      controlsMediaHook = null
       var pill = doc.getElementById('dsvs-knobs-pill')
       if (pill !== null) pill.remove()
       var panel = doc.getElementById('dsvs-knobs')
@@ -894,6 +1138,7 @@
       /* 尽力而为 */
     }
     backdrop = null
+    api.state.mode = null
     // 撤掉 data-dsvs ⇒ skin.css 里所有表面半透明规则立刻失效，界面回到原生外观。
     try {
       doc.documentElement.removeAttribute('data-dsvs')
@@ -967,107 +1212,83 @@
     if (backdrop !== null) return
     var bg = isObject(liveCfg.background) ? liveCfg.background : {}
     if (bg.enabled === false) return
-    var src = typeof bg.src === 'string' ? bg.src : ''
-    if (src === '') return
-    // 尊重系统的"减少动态效果"：常驻循环动画是这块设置主要管的东西。
-    try {
-      if (typeof global.matchMedia === 'function' && global.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        return
-      }
-    } catch (error) {
-      /* 拿不到就照常播 */
-    }
+    var kind = backdropKind(liveCfg)
+    if (mediaSrcFor(liveCfg, kind) === '') return
+    // 尊重系统的"减少动态效果"：常驻循环**动画**才是这块设置主要管的东西。
+    // 静态图没有动效，所以它在 reduced-motion 下照常建层 —— 那正是这条设置想要的样子。
+    if (kind === 'video' && reducedMotion()) return
     if (!doc.body) return
 
     var layer = el('div', null)
     layer.id = 'dsvs-backdrop'
-    var video = doc.createElement('video')
-    video.id = 'dsvs-backdrop-video'
-    video.muted = true
-    video.defaultMuted = true
-    video.loop = true
-    video.playsInline = true
-    video.autoplay = false
-    video.preload = 'none'
-    video.setAttribute('playsinline', '')
-    video.setAttribute('muted', '')
-    video.setAttribute('aria-hidden', 'true')
     var veil = el('div', null)
     veil.id = 'dsvs-backdrop-veil'
-
-    layer.appendChild(video)
     layer.appendChild(veil)
     doc.body.insertBefore(layer, doc.body.firstChild)
     doc.documentElement.setAttribute('data-dsvs', 'on')
     // 用**已经合并过运行期配置**的值来算，所以不会先建好再跳一下。
     applyVisuals(liveCfg)
 
-    backdrop = { layer: layer, video: video }
-
-    video.addEventListener('loadeddata', function () {
-      video.setAttribute('data-shown', '1')
-    })
-    video.addEventListener('error', function () {
-      // 素材拿不到就必须撤掉半透明表面，否则界面会变成"没有背景、字还发灰"。
-      api.state.failures.push('backdrop-error:' + (video.error ? video.error.code : 0))
-      teardownBackdrop()
-    })
-
-    var delayMs = num(bg.delayMs, 1200, 0, 60000)
-    var playbackRate = num(bg.playbackRate, 1, 0.25, 4)
-
-    var load = function () {
-      if (backdrop === null || backdrop.video !== video) return
-      try {
-        video.playbackRate = playbackRate
-      } catch (error) {
-        /* 有的实现不允许在 metadata 之前设置 */
-      }
-      video.src = src
-      var played = video.play()
-      if (played && typeof played.catch === 'function') played.catch(noop)
-    }
-    // 延后加载：开机阶段把带宽和 CPU 留给界面本身。
-    var delayTimer = global.setTimeout(load, delayMs)
+    backdrop = { layer: layer, veil: veil, media: null, kind: kind, delayTimer: null, onVisibility: null }
+    api.state.mode = kind
+    mountMedia(kind)
 
     var onVisibility = function () {
-      if (backdrop === null) return
+      // 只有短片需要管：窗口不可见时停掉解码，回来再续上。静态图没有"在播"这回事，
+      // 浏览器自己决定什么时候解码，多插一手只会让图在切回来时闪一下。
+      if (backdrop === null || backdrop.kind !== 'video' || backdrop.media === null) return
       if (doc.hidden === true) {
         try {
-          video.pause()
+          backdrop.media.pause()
         } catch (error) {
           /* 已经停了 */
         }
       } else {
-        var played = video.play()
+        var played = backdrop.media.play()
         if (played && typeof played.catch === 'function') played.catch(noop)
       }
     }
     doc.addEventListener('visibilitychange', onVisibility)
+    backdrop.onVisibility = onVisibility
 
     // 透明度调节控件（右下角小圆钮 → 滑块面板）。
     try {
-      buildControls(video)
+      buildControls()
     } catch (error) {
       api.state.failures.push('controls-fatal')
     }
 
-    return { layer: layer, video: video, cancel: delayTimer, onVisibility: onVisibility }
+    return backdrop
   }
 
   // ────────────────────── ③ 透明度调节（界面滑块） ──────────────────────
 
-  /** 一键预设：[surface, veil]，即"面板不透明度 / 视频蒙版"。 */
+  /** 一键预设：[surface, veil]，即"面板不透明度 / 蒙版"。 */
   var PRESETS = [
     { id: 'native', label: '接近原生', surface: 0.85, veil: 0.5 },
     { id: 'balanced', label: '均衡', surface: 0.2, veil: 0.14 },
     { id: 'clear', label: '视频最清', surface: 0, veil: 0 },
   ]
 
+  /**
+   * 面板上那排"背景类型"按钮。
+   *
+   * 顺序就是显示顺序（短片在左、静态图在右）—— 左是默认值，符合"默认那项在最前"的直觉。
+   */
+  var BACKGROUND_KINDS = [
+    { id: 'video', label: '视频背景' },
+    { id: 'image', label: '静态图' },
+  ]
+
   /** 控件挂的主题观察者（拆背景层时要一起断掉）。 */
   var knobObserver = null
   /** 控件挂在 window/document 上的监听者（拆背景层时要一起摘掉，否则会越堆越多）。 */
   var knobListeners = []
+  /**
+   * 面板用来"跟上新媒体元素"的钩子（换背景时元素会被换掉，旧监听器就白挂了）。
+   * 没建控件时是 null。
+   */
+  var controlsMediaHook = null
 
   /**
    * 把当前的有效旋钮值取出来（面板初始位置要用）。
@@ -1086,11 +1307,11 @@
   }
 
   /**
-   * 把滑块的值写回宿主（`$DSH_HOME/dsh-video-skin.json`）。
+   * 把界面控件的值写回宿主（`$DSH_HOME/dsh-video-skin.json`）。
    *
    * 失败**完全无害**：本次会话的观感已经立刻生效了，只是下次刷新会回到文件里的值 ——
    * 面板会把"没能存住"这件事说出来，而不是假装成功。
-   * @param {Record<string, number>} patch 要写的项。
+   * @param {Record<string, number | string>} patch 要写的项（四个透明度 + 可选的背景类型）。
    * @param {boolean} cleared 是否是"恢复默认"。
    * @returns {Promise<{ ok: boolean, config: Record<string, unknown> | null }>} 是否落到盘上，以及宿主返回的新配置。
    */
@@ -1159,21 +1380,24 @@
   /**
    * 量一次"正文在最坏情况附近的对比度"（画面 5% 分位），用于面板上的实时提示。
    *
-   * 和 `scripts/verify-browser.mjs` 用的是同一套算法：把视频帧画进小 canvas 采样，
-   * 按"视频 → 蒙版 → 表面"合成，再和正文色算 WCAG 对比度。这样滑块旁边那个数字
+   * 和 `scripts/verify-browser.mjs` 用的是同一套算法：把画面画进小 canvas 采样，
+   * 按"画面 → 蒙版 → 表面"合成，再和正文色算 WCAG 对比度。这样滑块旁边那个数字
    * 就是**这块屏幕上真实的读数**，而不是一句"应该还行"。
-   * @param {any} video 背景 video 元素。
+   *
+   * 短片和静态图都能量（`drawImage` 两者都收），而且**这套合成对两者是同一套** ——
+   * 所以"静态图的读数一次就是终值、短片要等下一帧"是这里唯一的行为差别。
+   * @param {any} media 背景元素（video 或 img）。
    * @returns {{ p5: number, min: number } | null} 对比度，量不了就是 null。
    */
-  function measureContrast(video) {
-    if (video === null || video.readyState < 2) return null
+  function measureContrast(media) {
+    if (!mediaReady(media)) return null
     try {
       var canvas = doc.createElement('canvas')
       canvas.width = 32
       canvas.height = 18
       var context = canvas.getContext('2d', { willReadFrequently: true })
       if (context === null || typeof context.getImageData !== 'function') return null
-      context.drawImage(video, 0, 0, 32, 18)
+      context.drawImage(media, 0, 0, 32, 18)
       var pixels = context.getImageData(0, 0, 32, 18).data
       var veilEl = doc.getElementById('dsvs-backdrop-veil')
       if (veilEl === null) return null
@@ -1242,21 +1466,26 @@
   /**
    * 造透明度调节控件：右下角一个小圆钮 + 一个滑块面板。
    *
-   * 三个设计取舍：
+   * 四个设计取舍：
    *   1. **不注入到 DSH 的设置页里**。那页是 React 管的，往里塞节点迟早出问题；
    *      面板挂在 document.body 上、和背景层同一层，互不干扰。
    *   2. 圆钮平时**半透明**（opacity .34），鼠标靠近才变实，尽量不碍眼；
    *      不想要就设 `background.controls: false`。
-   *   3. 面板里那个"文字对比度"是**真的量出来的**（采样当前视频帧），
+   *   3. 面板里那个"文字对比度"是**真的量出来的**（采样当前画面），
    *      所以用户能直接看到"我再调低一点，字还读不读得动"。
-   * @param {any} video 背景 video 元素。
+   *   4. 面板第一行是**背景类型**开关。它是这块面板上唯一"决定别的旋钮在管什么"的项，
+   *      所以放在最上面：先选素材，再调它有多淡。静态图不可用（宿主没给地址）时
+   *      整行不建 —— 一个点了没反应的按钮不如没有。
    */
-  function buildControls(video) {
+  function buildControls() {
     var bg = isObject(liveCfg.background) ? liveCfg.background : {}
     if (bg.controls === false) return
     if (doc.getElementById('dsvs-knobs') !== null) return
 
     var knobs = currentKnobs()
+    // 有没有第二种背景可切。宿主的配置解析在图不可用时会退回 `video` 并把地址留空，
+    // 这里据此决定要不要显示那排按钮。
+    var hasStill = typeof bg.imageSrc === 'string' && bg.imageSrc !== ''
 
     var pill = el('div', null)
     pill.id = 'dsvs-knobs-pill'
@@ -1276,6 +1505,18 @@
     head.appendChild(close)
     panel.appendChild(head)
 
+    var kindButtons = []
+    if (hasStill) {
+      var kinds = el('div', 'dsvs-knobs-modes')
+      kindButtons = BACKGROUND_KINDS.map(function (kind) {
+        var button = el('div', 'dsvs-knobs-mode', kind.label)
+        button.setAttribute('data-kind', kind.id)
+        kinds.appendChild(button)
+        return { kind: kind, node: button }
+      })
+      panel.appendChild(kinds)
+    }
+
     var presets = el('div', 'dsvs-knobs-presets')
     var presetButtons = PRESETS.map(function (preset) {
       var button = el('div', 'dsvs-knobs-preset', preset.label)
@@ -1286,9 +1527,12 @@
     panel.appendChild(presets)
 
     /** 造一行"标签 + 滑块 + 读数"。 */
-    function makeRow(key, label, max) {      var row = el('div', 'dsvs-knobs-row')
+    function makeRow(key, label, max) {
+      var row = el('div', 'dsvs-knobs-row')
       var head2 = el('div', 'dsvs-knobs-label')
-      head2.appendChild(el('span', null, label))
+      // 标签节点要留着：它会跟着背景类型变（"视频蒙版" ↔ "图片蒙版"）。
+      var labelNode = el('span', null, label)
+      head2.appendChild(labelNode)
       var output = el('span', 'dsvs-knobs-value')
       head2.appendChild(output)
       row.appendChild(head2)
@@ -1303,7 +1547,7 @@
       var note = el('div', 'dsvs-knobs-note')
       row.appendChild(note)
       panel.appendChild(row)
-      return { key: key, input: input, output: output, note: note, max: max }
+      return { key: key, label: labelNode, input: input, output: output, note: note, max: max }
     }
 
     var rows = [
@@ -1320,11 +1564,40 @@
     foot.appendChild(status)
     panel.appendChild(foot)
 
+    /** 把界面上的当前背景类型取出来（以层里的元素为准，配置是它的输入）。 */
+    function currentKind() {
+      if (backdrop !== null) return backdrop.kind
+      return backdropKind(liveCfg)
+    }
+
     /** 把一组旋钮值同步到滑块位置与读数上。 */
     function syncInputs(values) {
       rows[0].input.value = String(Math.round(values.surface * 100))
       rows[1].input.value = String(Math.round(values.veil * 100))
       refreshLabels(values)
+      refreshKind()
+    }
+
+    /**
+     * 让标签跟着背景类型走。
+     *
+     * "视频蒙版"和"图片蒙版"是同一个旋钮（都压在画面上），但叫错名字会让人以为
+     * 换了背景就得重新调一个别的值。预设里那个"最清"同理。
+     */
+    function refreshKind() {
+      var kind = currentKind()
+      var still = kind === 'image'
+      rows[1].label.textContent = still ? '图片蒙版' : '视频蒙版'
+      for (var index = 0; index < presetButtons.length; index += 1) {
+        var preset = presetButtons[index].preset
+        // 只改第三个（`clear`）的文案：另外两个预设描述的是"有多接近原生"，
+        // 换背景不影响那句话的成立。
+        if (preset.id === 'clear' && still) presetButtons[index].node.textContent = '图片最清'
+        else presetButtons[index].node.textContent = preset.label
+      }
+      for (var k = 0; k < kindButtons.length; k += 1) {
+        kindButtons[k].node.setAttribute('data-active', kindButtons[k].kind.id === kind ? '1' : '0')
+      }
     }
 
     /** 更新两行滑块旁的读数（暗/亮两个主题各是多少）。 */
@@ -1347,9 +1620,11 @@
 
     /** 重算实时对比度徽章。 */
     function refreshBadge() {
-      var measured = measureContrast(video)
+      var kind = currentKind()
+      var measured = measureContrast(currentMedia())
       if (measured === null) {
-        badge.textContent = '文字对比度：暂时量不到（视频还没出画面）'
+        badge.textContent =
+          '文字对比度：暂时量不到（' + (kind === 'image' ? '静态图还没加载完' : '视频还没出画面') + '）'
         badge.setAttribute('data-level', 'unknown')
         return
       }
@@ -1423,6 +1698,39 @@
       })(presetButtons[p])
     }
 
+    /**
+     * 换背景类型（短片 ↔ 静态图）。
+     *
+     * 和滑块不同，这里**点一下就写盘**：滑块是一次拖动过程（松手才写，免得打出几十个请求），
+     * 而这是一个离散的选择，没有"拖到一半"。
+     *
+     * 被否决时（reduced-motion 下换回短片）如实说出来，并且不改变按钮状态 ——
+     * 一边说"被拒绝"一边让按钮亮着，下次打开面板就会看到一个没生效的选择。
+     */
+    function chooseKind(kind) {
+      status.textContent = ''
+      var outcome = setBackgroundKind(kind)
+      refreshKind()
+      if (!outcome.ok) {
+        status.textContent =
+          outcome.reason === 'reduced-motion' ? '系统要求减少动态效果 · 不播视频背景' : '这个素材不可用'
+        return
+      }
+      status.textContent = '保存中…'
+      persistKnobs({ mode: kind }, false).then(function (result) {
+        status.textContent = result.ok ? '' : '没能写进配置文件（本次会话仍生效）'
+      })
+    }
+
+    for (var m = 0; m < kindButtons.length; m += 1) {
+      ;(function (entry) {
+        entry.node.addEventListener('click', function () {
+          if (entry.node.getAttribute('data-active') === '1') return
+          chooseKind(entry.kind.id)
+        })
+      })(kindButtons[m])
+    }
+
     reset.addEventListener('click', function () {
       status.textContent = '恢复中…'
       persistKnobs({}, true).then(function (outcome) {
@@ -1434,6 +1742,16 @@
           : injectedBackground
         liveCfg = mergeConfig(liveCfg, { background: restored })
         api.config = liveCfg
+        // 背景类型也一起恢复：只退回透明度、把类型留在用户选的静态图上，那叫恢复一半。
+        if (backdrop !== null && backdropKind(liveCfg) !== backdrop.kind) {
+          var back = setBackgroundKind(backdropKind(liveCfg))
+          if (!back.ok) {
+            // 被否决（reduced-motion）时把配置里的类型拉回层里**真的在用**的那一种，
+            // 免得"配置写着视频、面板亮着静态图"这种自相矛盾的状态留在内存里。
+            liveCfg = mergeConfig(liveCfg, { background: { mode: backdrop.kind } })
+            api.config = liveCfg
+          }
+        }
         applyVisuals(liveCfg)
         syncInputs(currentKnobs())
         scheduleBadge()
@@ -1498,9 +1816,21 @@
       /* 没有 document 也无所谓 */
     }
 
-    // 背景视频出画面之后徽章才有东西可量。
-    video.addEventListener('loadeddata', scheduleBadge)
-    video.addEventListener('timeupdate', scheduleBadge)
+    /**
+     * 让对比度徽章跟着**当前**那个媒体元素走。
+     *
+     * 换背景（短片 ↔ 静态图）时元素会被换掉，挂在旧元素上的监听器就永远收不到事件了 ——
+     * 所以每次装新元素都由 `mountMedia` 回来调这个钩子，而不是在这里一次性挂死。
+     * @param {any} media 刚装好的元素。
+     */
+    controlsMediaHook = function (media) {
+      // 短片出画面是 `loadeddata`/`timeupdate`，图是 `load`；两个都挂（见 `mountMedia`）。
+      media.addEventListener('loadeddata', scheduleBadge)
+      media.addEventListener('load', scheduleBadge)
+      media.addEventListener('timeupdate', scheduleBadge)
+      scheduleBadge()
+    }
+    controlsMediaHook(currentMedia())
 
     doc.body.appendChild(pill)
     doc.body.appendChild(panel)

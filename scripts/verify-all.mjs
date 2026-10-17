@@ -3,7 +3,8 @@
  *
  * 覆盖六类契约：
  *   ① 素材存在、非空、**moov 在 mdat 之前**（否则浏览器要整段下完才出画面）、
- *      且**没有音轨**（用户要求"不要声音，有画面即可"）；
+ *      且**没有音轨**（用户要求"不要声音，有画面即可"）；静态背景那张图也必须在盘上
+ *      并且真的是一张 JPEG；
  *   ② 注入的两行文本可解析、且不可能提前闭合元素；
  *   ③ 打包白名单 `files` 覆盖运行时会读到的每一条路径；
  *   ④ `cordis.patch.yml` 的行 `name` 与包名一致（不一致时 loader 只 warn 然后跳过，
@@ -29,6 +30,7 @@ const results = []
 const ROUTES = {
   boot: '/dsh-video-skin/boot.mp4',
   background: '/dsh-video-skin/background.mp4',
+  image: '/dsh-video-skin/background-image',
   config: '/dsh-video-skin/config.json',
 }
 
@@ -98,6 +100,15 @@ const ASSETS = [
   { file: 'assets/background.mp4', audio: false },
 ]
 
+/**
+ * 静态背景那张图。
+ *
+ * 它不是 mp4，所以上面那三条（moov/音轨/box 链）对它没有意义；它要守的是另外两条：
+ * **真的是一张 JPEG**（路由的 `Content-Type` 由扩展名决定，文件内容和扩展名不一致时
+ * 浏览器会拒收），以及**别太大**（它和短片一起挂在首屏上）。
+ */
+const STILL = 'assets/background.jpg'
+
 for (const { file: asset, audio } of ASSETS) {
   await check(`${asset} 存在且非空`, () => {
     const stat = fs.statSync(path.join(root, asset))
@@ -149,8 +160,23 @@ for (const { file: asset, audio } of ASSETS) {
   })
 }
 
+await check(`${STILL} 存在、非空，并且真的是一张 JPEG`, () => {
+  const bytes = fs.readFileSync(path.join(root, STILL))
+  assert.ok(bytes.length > 8 * 1024, `静态图太小（${bytes.length} 字节），抽帧大概没跑完`)
+  assert.deepEqual(
+    [...bytes.subarray(0, 3)],
+    [0xff, 0xd8, 0xff],
+    '缺 JPEG 的 SOI 标记 —— 内容和扩展名不一致，浏览器会拒收',
+  )
+  assert.ok(
+    bytes.length <= 2 * 1024 * 1024,
+    `静态图 ${(bytes.length / 1048576).toFixed(2)} MiB 太大：它会和短片一起挂上首屏`,
+  )
+})
+
 await check('素材总量不至于让首屏等太久（≤ 30 MiB）', () => {
-  const total = ASSETS.reduce((sum, { file }) => sum + fs.statSync(path.join(root, file)).size, 0)
+  const files = [...ASSETS.map(({ file }) => file), STILL]
+  const total = files.reduce((sum, file) => sum + fs.statSync(path.join(root, file)).size, 0)
   assert.ok(total <= 30 * 1024 * 1024, `素材合计 ${(total / 1048576).toFixed(1)} MiB`)
 })
 
@@ -194,6 +220,7 @@ await check('package.json 的 files 覆盖运行时读取的每条路径', () =>
     'runtime/skin.css',
     'assets/boot.mp4',
     'assets/background.mp4',
+    'assets/background.jpg',
     'cordis.patch.yml',
     'README.md',
     'README.zh.md',
@@ -203,8 +230,8 @@ await check('package.json 的 files 覆盖运行时读取的每条路径', () =>
     assert.ok(fs.existsSync(path.join(root, relative)), `缺少文件：${relative}`)
     assert.ok(covered(relative), `files 白名单没覆盖：${relative}`)
   }
-  // 发布面：npm 通道要能让用户装完自己跑测试，发布说明也得在包里。
-  for (const relative of ['scripts/verify-all.mjs', 'tests/lib.test.mjs', 'PUBLISHING.md']) {
+  // 发布面：npm 通道要能让用户装完自己跑测试、抽静态图，发布说明也得在包里。
+  for (const relative of ['scripts/verify-all.mjs', 'scripts/make-still.mjs', 'tests/lib.test.mjs', 'PUBLISHING.md']) {
     assert.ok(covered(relative), `files 白名单没覆盖：${relative}`)
   }
   // 元数据要指向真实地址，否则 npm 页面上的链接是坏的。
@@ -270,6 +297,23 @@ await check('默认配置下两个功能都可用', () => {
   assert.equal(client.background.enabled, true)
   assert.ok(fs.existsSync(paths.boot))
   assert.ok(fs.existsSync(paths.background))
+  assert.ok(fs.existsSync(paths.image))
+  // 默认是循环短片；静态图的地址同时给好，面板上的切换才不是摆设。
+  assert.equal(client.background.mode, 'video')
+  assert.equal(client.background.imageSrc, ROUTES.image)
+})
+
+await check('切成静态图也照样成立（mode:image 时两个素材都解析得到）', () => {
+  const { client, warnings, paths } = resolveConfig(
+    { background: { mode: 'image' } },
+    { packageRoot: root, routes: ROUTES, version: 'verify' },
+  )
+  assert.deepEqual(warnings, [])
+  assert.equal(client.background.enabled, true)
+  assert.equal(client.background.mode, 'image')
+  assert.equal(client.background.imageSrc, ROUTES.image)
+  assert.equal(client.background.src, ROUTES.background, '短片地址要留着：面板能切回去')
+  assert.ok(fs.existsSync(paths.image))
 })
 
 const failed = results.filter(([ok]) => !ok)

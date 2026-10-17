@@ -168,6 +168,10 @@ class StubElement {
     this.readyState = 0
     this.currentTime = 0
     this.duration = NaN
+    /** `<img>` 的"能出画面"标志：`complete && naturalWidth > 0`，加载完才置位。 */
+    this.complete = false
+    this.naturalWidth = 0
+    this.naturalHeight = 0
     this._src = ''
     this.playCalls = 0
     this.pauseCalls = 0
@@ -265,6 +269,13 @@ class StubElement {
 
   removeAttribute(name) {
     this.attributes.delete(String(name))
+    // 真实 DOM 里 `src` 是**反射属性**：`removeAttribute('src')` 之后 `el.src` 就是空串。
+    // 拆背景层时运行时正是靠这一条把还在下载的素材断掉，桩里也必须一致，
+    // 否则"摘掉元素之后素材其实还在"这种漏在测试里看不出来。
+    if (name === 'src') {
+      this._src = ''
+      this.readyState = 0
+    }
   }
 
   addEventListener(type, listener, options) {
@@ -327,6 +338,27 @@ class StubElement {
     this.readyState = 3
     const callbacks = this.frameCallbacks.splice(0, this.frameCallbacks.length)
     for (const callback of callbacks) callback()
+  }
+
+  /**
+   * 模拟"这张静态图解出来了"。
+   *
+   * 和 {@link presentFrame} 一样刻意**不自动触发**：`complete && naturalWidth > 0` 是运行时
+   * 判断"图能不能出画面"的唯一依据，自动置位会让"图挂了"那条路径在测试里永远走不到。
+   * @param {number} [width] 图的自然宽度。
+   */
+  presentImage(width = 1600) {
+    this.complete = true
+    this.naturalWidth = width
+    this.naturalHeight = Math.round((width * 9) / 16)
+    this.dispatchEvent({ type: 'load' })
+  }
+
+  /** 模拟"这张静态图加载失败"：真实浏览器里就是 complete 为真、naturalWidth 为 0。 */
+  failImage() {
+    this.complete = true
+    this.naturalWidth = 0
+    this.dispatchEvent({ type: 'error' })
   }
 
   play() {

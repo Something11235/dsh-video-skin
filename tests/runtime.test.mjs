@@ -45,7 +45,10 @@ function config(patch = {}) {
     },
     background: {
       enabled: true,
+      // 默认是循环短片；静态图的地址由宿主一起给（面板上那排按钮据此决定显不显示）。
+      mode: 'video',
       src: '/dsh-video-skin/background.mp4',
+      imageSrc: '/dsh-video-skin/background-image',
       veil: 0.14,
       surface: 0.2,
       delayMs: 1200,
@@ -64,6 +67,7 @@ const overlay = (h) => h.body.querySelector('.dsvs-boot')
 const backdrop = (h) => h.body.querySelector('#dsvs-backdrop')
 const bootVideo = (h) => h.body.querySelector('.dsvs-boot-video')
 const backdropVideo = (h) => h.body.querySelector('#dsvs-backdrop-video')
+const backdropImage = (h) => h.body.querySelector('#dsvs-backdrop-image')
 const soundButton = (h) => h.body.querySelector('.dsvs-boot-sound')
 
 /**
@@ -578,6 +582,7 @@ test('非法配置被夹取：fadeMs 不能是 0，surface 不能超出 0..1', a
 const pill = (h) => h.body.querySelector('#dsvs-knobs-pill')
 const panel = (h) => h.body.querySelector('#dsvs-knobs')
 const ranges = (h) => panel(h).querySelectorAll('.dsvs-knobs-range')
+const kindButtons = (h) => panel(h).querySelectorAll('.dsvs-knobs-mode')
 
 /** 起一份配置：带 override 路由地址，读回可用。 */
 function knobConfig(patch = {}) {
@@ -807,4 +812,219 @@ test('parseColor 认 rgb / rgba / color(srgb)', () => {
   assert.deepEqual(parse('color(srgb 0.5 0.25 0.75 / 0.5)'), { r: 127.5, g: 63.75, b: 191.25, a: 0.5 })
   assert.equal(parse('transparent'), null)
   assert.equal(parse(''), null)
+})
+
+// ────────────────────── 背景类型：循环短片 ↔ 静态图 ──────────────────────
+
+test('mode:image：层里是一张静态图（不是短片），蒙版照样压在它上面，素材照样延后取', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, config({ background: { mode: 'image' } }))
+  overlay(h).dispatchEvent({ type: 'pointerdown' })
+  h.clock.advance(600)
+  await flush()
+
+  const layer = backdrop(h)
+  assert.ok(layer)
+  assert.equal(backdropVideo(h), null, '静态图模式下不该建 video：它没有音轨也没有循环可言')
+  const image = backdropImage(h)
+  assert.ok(image)
+  // 顺序很要紧：图在前、蒙版在后。反了就等于没有蒙版（字会直接压在画面上）。
+  assert.equal(layer.children[0], image)
+  assert.equal(layer.children[1].id, 'dsvs-backdrop-veil')
+  assert.equal(image.getAttribute('data-shown'), null, '没加载完就不该显形')
+  assert.equal(image.getAttribute('aria-hidden'), 'true')
+
+  assert.equal(h.documentElement.getAttribute('data-dsvs'), 'on')
+  assert.equal(image.src, '', '界面就绪后先不抢带宽')
+  h.clock.advance(1200)
+  assert.equal(image.src, '/dsh-video-skin/background-image')
+  image.presentImage()
+  assert.equal(image.getAttribute('data-shown'), '1', '图到位之后淡入')
+})
+
+test('系统要求减少动态效果：静态背景照常显示（它本来就没有动效）', async () => {
+  const h = createHarness({ reducedMotion: true })
+  h.run(RUNTIME, config({ background: { mode: 'image' } }))
+  overlay(h).dispatchEvent({ type: 'pointerdown' })
+  h.clock.advance(2000)
+  await flush()
+  assert.ok(backdrop(h), 'reduced-motion 不该连"一张不动的图"一起毙掉')
+  assert.ok(backdropImage(h))
+})
+
+test('静态图加载失败：和短片一样撤掉半透明表面，不留"没背景、字还发灰"', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, knobConfig({ background: { mode: 'image' } }))
+  await reachBackdrop(h)
+  h.clock.advance(1200)
+  backdropImage(h).failImage()
+  h.clock.advance(32)
+  assert.equal(backdrop(h), null)
+  assert.equal(h.documentElement.hasAttribute('data-dsvs'), false)
+  assert.ok(
+    h.window.__DSH_VIDEO_SKIN__.state.failures.includes('backdrop-error:image'),
+    '诊断里要留下"是静态图挂了"的痕迹',
+  )
+})
+
+test('面板上换背景：点一下立刻换成静态图、写回宿主，标签也跟着改', async () => {
+  const h = createHarness()
+  const calls = spyFetch(h)
+  h.run(RUNTIME, knobConfig())
+  await reachBackdrop(h)
+
+  const kinds = kindButtons(h)
+  assert.equal(kinds.length, 2, '两个按钮：视频背景 / 静态图')
+  assert.equal(kinds[0].getAttribute('data-active'), '1', '默认亮着短片')
+  assert.equal(kinds[1].getAttribute('data-active'), '0')
+  assert.match(panel(h).querySelectorAll('.dsvs-knobs-label')[1].textContent, /视频蒙版/u)
+  assert.equal(panel(h).querySelectorAll('.dsvs-knobs-preset')[2].textContent, '视频最清')
+
+  kinds[1].dispatchEvent({ type: 'click' })
+  await flush()
+  assert.ok(backdropImage(h), '立刻换成静态图（不重建整层）')
+  assert.equal(backdropVideo(h), null, '旧的短片必须被摘掉')
+  assert.equal(kinds[1].getAttribute('data-active'), '1')
+  assert.equal(kinds[0].getAttribute('data-active'), '0')
+  // 同一个旋钮，换个名字；预设那条同理。
+  assert.match(panel(h).querySelectorAll('.dsvs-knobs-label')[1].textContent, /图片蒙版/u)
+  assert.equal(panel(h).querySelectorAll('.dsvs-knobs-preset')[2].textContent, '图片最清')
+  // 还没加载完时读数要如实说"量不到"，而且说的是图上这件事（徽章在下一帧重算）。
+  h.clock.advance(32)
+  assert.match(panel(h).querySelector('.dsvs-knobs-badge').textContent, /静态图还没加载完/u)
+
+  // 一次点击就写盘（它是个离散选择，没有"拖到一半"）。
+  const sent = writes(calls)
+  assert.equal(sent.length, 1)
+  assert.deepEqual(JSON.parse(sent[0].body), { background: { mode: 'image' } })
+  // 取素材**没有等 delayMs**：等满 1.2 秒的话，点击看起来就是"没反应"，这中间层里只剩底色。
+  // （上面那次 32ms 的推进已经足够让它开始取了 —— 32ms ≪ 1200ms。）
+  assert.equal(backdropImage(h).src, '/dsh-video-skin/background-image', '切过去就立刻取素材')
+  assert.match(panel(h).querySelector('.dsvs-knobs-badge').textContent, /静态图还没加载完/u)
+})
+
+test('从静态图切回短片：图被摘掉、短片重新开始播', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, knobConfig({ background: { mode: 'image' } }))
+  await reachBackdrop(h)
+  h.clock.advance(1200)
+  const image = backdropImage(h)
+  image.presentImage()
+  assert.equal(image.getAttribute('data-shown'), '1')
+
+  kindButtons(h)[0].dispatchEvent({ type: 'click' })
+  await flush()
+  assert.equal(backdropImage(h), null, '图被摘掉')
+  const video = backdropVideo(h)
+  assert.ok(video)
+  assert.equal(video.loop, true, '短片照旧循环、照旧无声')
+  assert.equal(video.muted, true)
+  h.clock.advance(16)
+  assert.equal(video.playCalls, 1, '切回来就续上播放（不等 delayMs）')
+})
+
+test('换下来的旧元素报错不该拆掉现在的背景', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, knobConfig())
+  await reachBackdrop(h)
+  const oldVideo = backdropVideo(h)
+  assert.ok(oldVideo)
+
+  kindButtons(h)[1].dispatchEvent({ type: 'click' })
+  await flush()
+  assert.ok(backdropImage(h))
+
+  // 旧元素已经不在 DOM 里了，但错误监听器还在它身上。真实世界里"被中断的下载"完全可能
+  // 补报一次 error —— 拿它去拆现在的背景，表现就是"换了个背景，过一会儿整个皮肤没了"。
+  oldVideo.dispatchEvent({ type: 'error' })
+  h.clock.advance(32)
+  assert.ok(backdrop(h), '现在的背景是静态图，旧短片的错误不该把它一起带走')
+  assert.ok(backdropImage(h))
+  assert.equal(h.documentElement.getAttribute('data-dsvs'), 'on')
+})
+
+test('reduced-motion 下切回短片被如实拒绝：保持静态图，并把原因写出来', async () => {
+  const h = createHarness({ reducedMotion: true })
+  const calls = spyFetch(h)
+  h.run(RUNTIME, knobConfig({ background: { mode: 'image' } }))
+  await reachBackdrop(h)
+  h.clock.advance(1200)
+  assert.ok(backdropImage(h))
+
+  kindButtons(h)[0].dispatchEvent({ type: 'click' })
+  await flush()
+  assert.ok(backdropImage(h), '仍然是静态图')
+  assert.equal(backdropVideo(h), null)
+  assert.equal(kindButtons(h)[0].getAttribute('data-active'), '0', '按钮不能亮成一个没生效的选择')
+  assert.match(panel(h).querySelector('.dsvs-knobs-status').textContent, /减少动态效果/u)
+  assert.equal(writes(calls).length, 0, '被拒绝的选择不该写进配置文件')
+})
+
+test('恢复默认把背景类型也退回去（不是只退透明度）', async () => {
+  const h = createHarness()
+  // 宿主在 DELETE 的响应里带回**整块**背景的部署期默认值（真实宿主就是这么答的）。
+  const calls = spyFetch(h, {
+    ok: true,
+    persisted: true,
+    config: { background: { surface: 0.2, surfaceLight: 0.6, veil: 0.14, veilLight: 0.1, mode: 'video' } },
+  })
+  h.run(RUNTIME, knobConfig())
+  await reachBackdrop(h)
+  kindButtons(h)[1].dispatchEvent({ type: 'click' })
+  await flush()
+  assert.ok(backdropImage(h))
+
+  panel(h).querySelector('.dsvs-knobs-reset').dispatchEvent({ type: 'click' })
+  await flush()
+  const sent = writes(calls)
+  assert.equal(sent[1].method, 'DELETE')
+  assert.ok(backdropVideo(h), '退回短片')
+  assert.equal(backdropImage(h), null)
+  assert.equal(kindButtons(h)[0].getAttribute('data-active'), '1')
+})
+
+test('宿主没给静态图地址时：不显示那排按钮（没有第二个可选项就不要有按钮）', async () => {
+  const h = createHarness()
+  const base = knobConfig({ background: { imageSrc: '' } })
+  h.run(RUNTIME, base)
+  await reachBackdrop(h)
+  assert.equal(kindButtons(h).length, 0)
+  assert.ok(backdropVideo(h), '照旧播短片')
+})
+
+test('api.setBackgroundMode 就是面板用的那个入口（端到端脚本靠它，不另写一份实现）', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, knobConfig())
+  await reachBackdrop(h)
+  const api = h.window.__DSH_VIDEO_SKIN__
+
+  assert.equal(api.setBackgroundMode('image').ok, true)
+  assert.ok(backdropImage(h))
+  assert.equal(api.state.mode, 'image')
+  assert.equal(api.config.background.mode, 'image', 'api.config 要跟着走')
+
+  assert.equal(api.setBackgroundMode('video').ok, true)
+  assert.ok(backdropVideo(h))
+  assert.equal(api.state.mode, 'video')
+
+  // 脏值归一成短片，而不是抛。
+  assert.equal(api.setBackgroundMode('gif').ok, true)
+  assert.equal(api.state.mode, 'video')
+})
+
+test('图片模式下窗口不可见：什么都不用做（没有"在播"这回事）', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, knobConfig({ background: { mode: 'image' } }))
+  await reachBackdrop(h)
+  h.clock.advance(1200)
+  const image = backdropImage(h)
+  image.presentImage()
+  h.document.hidden = true
+  h.document.dispatchEvent({ type: 'visibilitychange' })
+  h.document.hidden = false
+  h.document.dispatchEvent({ type: 'visibilitychange' })
+  // 图还在、也没被"暂停"过：静态图不该因为切标签页而消失或重新闪一下。
+  assert.equal(backdropImage(h), image)
+  assert.equal(backdropImage(h).getAttribute('data-shown'), '1')
+  assert.equal(h.window.__DSH_VIDEO_SKIN__.state.failures.filter((f) => f.startsWith('backdrop-error')).length, 0)
 })

@@ -15,11 +15,12 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE, VERSION, apply } from '../index.js'
+import { BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, IMAGE_ROUTE, OVERRIDE_ROUTE, VERSION, apply } from '../index.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const packageRoot = path.resolve(here, '..')
 const BOOT_FILE = path.join(packageRoot, 'assets', 'boot.mp4')
+const IMAGE_FILE = path.join(packageRoot, 'assets', 'background.jpg')
 
 /** 造一个能骗过 `apply()` 的宿主上下文：只实现它真正用到的四个成员。 */
 function makeContext() {
@@ -93,12 +94,12 @@ function boot(options = {}) {
   }
 }
 
-test('apply() 不抛异常，并且注册了配置/开机/背景/滑块写回四条 exact 路由', () => {
+test('apply() 不抛异常，并且注册了配置/开机/背景短片/背景静态图/写回五条 exact 路由', () => {
   const { ctx } = boot()
   assert.equal(ctx.injectListeners.length, 1, '注入订阅必须只有一个')
   assert.deepEqual(
     [...ctx.routes.keys()].sort(),
-    [BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE].sort(),
+    [BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, IMAGE_ROUTE, OVERRIDE_ROUTE].sort(),
   )
 })
 
@@ -113,6 +114,7 @@ test('注入行：两行、style 在前 script 在后、script 里没有 </scrip
   assert.ok(table[1].text.includes('dsvs-boot'), '运行时脚本必须真的在行里')
   assert.ok(table[1].text.includes(BOOT_ROUTE))
   assert.ok(table[1].text.includes(BACKGROUND_ROUTE))
+  assert.ok(table[1].text.includes(IMAGE_ROUTE), '静态图地址也要在行里，否则面板切不过去')
 })
 
 test('整片请求：200 + video/mp4 + Accept-Ranges + ETag + no-cache', async () => {
@@ -207,6 +209,8 @@ test('配置路由：no-store，且带素材地址与版本号', async () => {
     assert.equal(payload.version, VERSION)
     assert.equal(payload.boot.src, BOOT_ROUTE)
     assert.equal(payload.background.src, BACKGROUND_ROUTE)
+    assert.equal(payload.background.mode, 'video', '默认还是循环短片')
+    assert.equal(payload.background.imageSrc, IMAGE_ROUTE, '静态图地址要一起给，面板才能切')
     assert.equal(payload.boot.enabled, true)
     assert.equal(payload.background.enabled, true)
     // 用户要求：开机动画要有声音。有声那条必须真的进到载荷里。
@@ -265,6 +269,45 @@ test('卸载时路由被注销', () => {
   assert.equal(ctx.disposers.length, 1)
   ctx.disposers[0]()
   assert.equal(ctx.routes.size, 0)
+})
+
+test('静态图路由：200 + image/jpeg，字节数与原文件一致', async () => {
+  const { ctx } = boot()
+  const { server, base } = await serve(ctx.routes)
+  try {
+    const response = await fetch(`${base}${IMAGE_ROUTE}`)
+    assert.equal(response.status, 200)
+    // 路由名特意不带扩展名：类型来自**真实落地文件**的扩展名（换成 png/webp 也对）。
+    assert.equal(response.headers.get('content-type'), 'image/jpeg')
+    assert.match(response.headers.get('cache-control') ?? '', /no-cache/u)
+    assert.ok(response.headers.get('etag'))
+    const body = Buffer.from(await response.arrayBuffer())
+    assert.equal(body.length, fs.statSync(IMAGE_FILE).size)
+    // 顺手证一下"它真是一张 JPEG"：SOI 标记（FF D8 FF）不会撒谎。
+    assert.deepEqual([...body.subarray(0, 3)], [0xff, 0xd8, 0xff])
+  } finally {
+    server.close()
+  }
+})
+
+test('静态图不在盘上：那条路由回 404，背景短片不受影响', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-home-'))
+  fs.writeFileSync(
+    path.join(home, 'dsh-video-skin.json'),
+    JSON.stringify({ background: { mode: 'image', image: 'assets/gone.jpg' } }),
+  )
+  const { ctx } = boot({ home })
+  const { server, base } = await serve(ctx.routes)
+  try {
+    assert.equal((await fetch(`${base}${IMAGE_ROUTE}`)).status, 404)
+    assert.equal((await fetch(`${base}${BACKGROUND_ROUTE}`)).status, 200)
+    // 图不可用时宿主把类型退回短片 —— 页面侧因此不会去点一个不存在的素材。
+    const payload = await (await fetch(`${base}${CONFIG_ROUTE}`)).json()
+    assert.equal(payload.background.mode, 'video')
+    assert.equal(payload.background.imageSrc, '')
+  } finally {
+    server.close()
+  }
 })
 
 // ────────────────────── 界面滑块的写回端点 ──────────────────────
@@ -331,6 +374,82 @@ test('滑块恢复默认：DELETE 只摘掉那几项，其他内容不动', asyn
     const after = await (await fetch(`${base}${CONFIG_ROUTE}`)).json()
     assert.equal(after.background.surface, 0.2, '回到默认值')
     assert.equal(after.background.veil, 0.14)
+  } finally {
+    server.close()
+  }
+})
+
+// ────────────────────── 背景类型开关（短片 / 静态图） ──────────────────────
+
+test('背景类型写回：POST mode 落到用户文件，config.json 立刻反映', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-home-'))
+  fs.writeFileSync(
+    path.join(home, 'dsh-video-skin.json'),
+    JSON.stringify({ background: { delayMs: 300 }, boot: { hint: '别动我' } }),
+  )
+  const { ctx } = boot({ home })
+  const { server, base } = await serve(ctx.routes)
+  try {
+    assert.equal((await (await fetch(`${base}${CONFIG_ROUTE}`)).json()).background.mode, 'video')
+
+    const posted = await fetch(`${base}${OVERRIDE_ROUTE}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ background: { mode: 'image' } }),
+    })
+    assert.equal(posted.status, 200)
+    const result = await posted.json()
+    assert.equal(result.persisted, true)
+    assert.equal(result.config.background.mode, 'image', '响应里就带回新配置')
+
+    const onDisk = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+    assert.equal(onDisk.background.mode, 'image')
+    assert.equal(onDisk.background.delayMs, 300, '无关的键原样保留')
+    assert.equal(onDisk.boot.hint, '别动我')
+
+    const after = await (await fetch(`${base}${CONFIG_ROUTE}`)).json()
+    assert.equal(after.background.mode, 'image')
+    // 两个素材地址都在：切回去是个纯客户端的动作，不必再问宿主。
+    assert.equal(after.background.imageSrc, IMAGE_ROUTE)
+    assert.equal(after.background.src, BACKGROUND_ROUTE)
+
+    // DELETE 也要把类型一起摘掉（恢复默认是恢复整块背景）。
+    await fetch(`${base}${OVERRIDE_ROUTE}`, { method: 'DELETE' })
+    const cleared = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+    assert.deepEqual(cleared.background, { delayMs: 300 })
+    assert.equal((await (await fetch(`${base}${CONFIG_ROUTE}`)).json()).background.mode, 'video')
+  } finally {
+    server.close()
+  }
+})
+
+test('背景类型写回：非法字面量被拒，且不会盖掉同一份请求里的数字', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-home-'))
+  const configFile = path.join(home, 'dsh-video-skin.json')
+  const { ctx } = boot({ home })
+  const { server, base } = await serve(ctx.routes)
+  try {
+    // 只有脏值：拒掉，并且一个字节都不写盘（`mode` 是字符串，夹取逻辑不适用）。
+    const dirtyOnly = await fetch(`${base}${OVERRIDE_ROUTE}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ background: { mode: 'hack' } }),
+    })
+    assert.equal(dirtyOnly.status, 400)
+    assert.equal(fs.existsSync(configFile), false)
+
+    // 脏值 + 合法数字：数字照常写，脏值被丢掉（而不是把整个请求判死）。
+    const mixed = await (
+      await fetch(`${base}${OVERRIDE_ROUTE}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ background: { mode: 'gif', surface: 0.3 } }),
+      })
+    ).json()
+    assert.equal(mixed.config.background.surface, 0.3)
+    assert.equal(mixed.config.background.mode, 'video', '脏值不生效')
+    const onDisk = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+    assert.deepEqual(Object.keys(onDisk.background).sort(), ['surface'], '脏值不该被写进去')
   } finally {
     server.close()
   }
