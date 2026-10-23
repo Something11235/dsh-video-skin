@@ -842,16 +842,17 @@
     var veilLight = num(bg.veilLight, veil * 0.7, 0, 0.92)
     var root = doc.documentElement
     if (root && root.style && typeof root.style.setProperty === 'function') {
-      // 派生层在这里算好、写成独立变量：颜色函数里不出现 calc()，值本身也可被断言。
-      var setLayer = function (prefix, base) {
+      // 派生值在这里算好、写成独立变量：颜色函数里不出现 calc()，值本身也可被断言。
+      //
+      // **只有"画布"和"侧栏"跟着滑块走**。`layer1/2/3`（对话框、弹层、菜单、卡片、
+      // 设置页）**故意不派生** —— 它们必须保持内核原生的不透明色，否则背后的正文会
+      // 透进对话框里，两段文字叠在一起就没法读。详见 skin.css 里那段注释。
+      var setSurface = function (prefix, base) {
         root.style.setProperty(prefix + 'surface', String(base))
-        root.style.setProperty(prefix + 'layer1', String(Math.min(1, base + 0.1)))
-        root.style.setProperty(prefix + 'layer2', String(Math.min(1, base + 0.16)))
-        root.style.setProperty(prefix + 'layer3', String(Math.min(1, base + 0.2)))
         root.style.setProperty(prefix + 'sidebar', String(Math.min(1, base + 0.06)))
       }
-      setLayer('--dsvs-', surface)
-      setLayer('--dsvs-l-', surfaceLight)
+      setSurface('--dsvs-', surface)
+      setSurface('--dsvs-l-', surfaceLight)
       root.style.setProperty('--dsvs-veil', String(veil))
       root.style.setProperty('--dsvs-l-veil', String(veilLight))
     }
@@ -1307,7 +1308,9 @@
     }
 
     var rows = [
-      makeRow('surface', '面板不透明度', 100),
+      // 名字里别写"面板"：这个旋钮只影响**画布和侧栏**，弹层/对话框/设置页是内核原生
+      // 不透明色（否则背后的正文会透进对话框里）。见 skin.css 里那段注释。
+      makeRow('surface', '画布不透明度', 100),
       makeRow('veil', '视频蒙版', 92),
     ]
 
@@ -1354,7 +1357,7 @@
         return
       }
       var level = measured.p5 >= 7 ? 'great' : measured.p5 >= 4.5 ? 'ok' : 'low'
-      var word = level === 'great' ? '很充裕' : level === 'ok' ? '够用' : '偏低 · 建议调高面板不透明度'
+      var word = level === 'great' ? '很充裕' : level === 'ok' ? '够用' : '偏低 · 建议调高画布不透明度'
       badge.textContent = '文字对比度 ' + measured.p5.toFixed(1) + '（' + word + '）'
       badge.setAttribute('data-level', level)
     }

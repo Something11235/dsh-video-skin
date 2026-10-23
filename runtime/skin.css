@@ -270,28 +270,29 @@ body[data-ds-dark-theme] #dsvs-backdrop-veil {
   background: rgba(0, 0, 0, var(--dsvs-veil, 0.14));
 }
 
-/* 表面半透明化。
+/* 表面半透明化 —— **只动"画布"和"侧栏"，不动"浮起来的表面"**。
  *
- * **暗色和亮色的表面值刻意不同**：文字在暗主题是浅色、在亮主题是深色，而这条素材整体偏暗
- * （实测 YAVG≈0.25），所以同样薄的白色表面会让深色文字掉到 3:1 以下，而深色表面不会。
- * 两边都用一个值的结果就是"亮主题没法读"。实测数据见 README §3。
+ * 分成两类是有原因的（这是用户报障之后才分清的一条界线）：
+ *
+ *   ① 画布 / 侧栏（bg-base、sidebar-fill）：视频就在它们后面，半透明才能看见画面。
+ *   ② 抬起来的表面（bg-layer-1/2/3）：对话框、弹层、菜单、卡片、设置页。
+ *      **它们必须保持内核原生的不透明色**，否则背后正在滚动/闪动的正文会透进对话框里，
+ *      两段文字叠在一起就没法读了。设置页和「预览版说明」模态用的都是
+ *      `_dialog_*{ background: var(--dsw-alias-bg-layer-2) }`，同一个 token。
+ *
+ * 早先的实现把 ①②一起半透明化（layer2 = surface+0.16，暗主题只有 0.36），于是
+ * 一调低"面板不透明度"，设置页就变成一张玻璃纸。现在 ② 不再跟着滑块走。
  *
  * 每一层的不透明度都是 JS 先算好再写成独立变量，不在 `rgba()` 里写 `calc(var(...) + .14)`：
  * 自定义属性是 token 流，`calc()` 会被原样替换进颜色函数，能不能解析取决于实现；
  * 算好再写就没有这层不确定性，而且值本身可以直接被断言。 */
 html[data-dsvs="on"] body {
   --dsw-alias-bg-base: rgba(255, 255, 255, var(--dsvs-l-surface, 0.6)) !important;
-  --dsw-alias-bg-layer-1: rgba(255, 255, 255, var(--dsvs-l-layer1, 0.7)) !important;
-  --dsw-alias-bg-layer-2: rgba(255, 255, 255, var(--dsvs-l-layer2, 0.76)) !important;
-  --dsw-alias-bg-layer-3: rgba(255, 255, 255, var(--dsvs-l-layer3, 0.8)) !important;
   --dsw-specific-sidebar-fill: rgba(249, 250, 251, var(--dsvs-l-sidebar, 0.66)) !important;
 }
 
 html[data-dsvs="on"] body[data-ds-dark-theme] {
   --dsw-alias-bg-base: rgba(21, 21, 23, var(--dsvs-surface, 0.2)) !important;
-  --dsw-alias-bg-layer-1: rgba(35, 35, 36, var(--dsvs-layer1, 0.3)) !important;
-  --dsw-alias-bg-layer-2: rgba(41, 41, 41, var(--dsvs-layer2, 0.36)) !important;
-  --dsw-alias-bg-layer-3: rgba(47, 47, 49, var(--dsvs-layer3, 0.4)) !important;
   --dsw-specific-sidebar-fill: rgba(27, 27, 28, var(--dsvs-sidebar, 0.26)) !important;
 }
 

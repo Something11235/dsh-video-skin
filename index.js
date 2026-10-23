@@ -45,7 +45,7 @@ export const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 export const OVERRIDE_ROUTE = `${ROUTE_PREFIX}/override`
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.1.1'
+export const VERSION = '0.1.2'
 
 /** 路由表：同时是配置解析的输入。 */
 const ROUTES = Object.freeze({

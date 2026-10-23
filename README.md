@@ -34,8 +34,12 @@ then fading into the app, and **skippable with a click**.
   > Earlier builds cross-dissolved over the clip's tail and used the *actual remaining time* as the fade
   > duration — when the app became ready late that left only 100–200 ms, which read as a **hard cut**.
   > Default is now `exitMode: 'end'`; `exitMode: 'tail'` restores the crossfade (still with a fixed fade).
-- Backdrop: silent, looping, `object-fit: cover`, with the app's surface tokens made translucent —
-  **the picture is clearly visible** and the text stays readable.
+- Backdrop: silent, looping, `object-fit: cover`, with the **canvas and sidebar** surface tokens made
+  translucent — **the picture is clearly visible** and the text stays readable.
+  **Raised surfaces stay opaque**: the kernel paints dialogs, popovers, menus, cards and the settings
+  view with `--dsw-alias-bg-layer-1/2/3` (`_dialog_* { background: var(--dsw-alias-bg-layer-2) }`), so
+  those tokens are deliberately **left untouched** — otherwise the scrolling text behind a dialog shows
+  through it and neither layer is readable.
 - A **transparency slider in the UI** (bottom-right pill): two sliders, three presets, and a live
   body-text contrast readout; changes apply on refresh with no DSH restart.
 - **Zero dependencies.** The host half imports only `node:` builtins; the browser half is one inline
@@ -50,8 +54,13 @@ then fading into the app, and **skippable with a click**.
 | --- | --- |
 | ![boot animation](docs/e2e-1-boot.png) | ![light theme backdrop](docs/e2e-2-app.png) |
 | Boot animation: clip fills the window (with sound), real boot progress bar, permanent "click to skip" pill | Light theme: backdrop fills the window, body-text contrast p5 = **7.90** |
-| ![dark theme backdrop](docs/e2e-3-dark.png) | |
-| Dark theme: video clearly visible, body-text contrast p5 = **6.86**, median 16.06 (AA needs 4.5) | |
+| ![dark theme backdrop](docs/e2e-3-dark.png) | ![settings, light](docs/e2e-5-settings-light.png) |
+| Dark theme: video clearly visible, body-text contrast p5 = **6.86**, median 16.06 (AA needs 4.5) | Settings view (light): opaque panel — the chat behind does not bleed in |
+
+![settings, dark](docs/e2e-6-settings-dark.png)
+
+Settings view in dark theme. That layer used to be `layer-2` at alpha 0.36 (the worst case) and let the
+chat text show straight through the dialog; it now keeps the kernel's native opaque colour.
 
 ## Sound
 

@@ -448,7 +448,12 @@ test('背景层：挂在 body 最前面、data-dsvs 打开半透明表面、素�
   assert.equal(h.documentElement.getAttribute('data-dsvs'), 'on')
   assert.equal(h.documentElement.style.getPropertyValue('--dsvs-surface'), '0.2')
   assert.equal(h.documentElement.style.getPropertyValue('--dsvs-veil'), '0.14')
-  assert.equal(h.documentElement.style.getPropertyValue('--dsvs-layer1'), '0.30000000000000004')
+  assert.equal(h.documentElement.style.getPropertyValue('--dsvs-sidebar'), '0.26')
+  // **弹层/对话框/卡片那几层（layer1/2/3）故意不派生**：它们必须保持内核原生不透明色，
+  // 否则背后的正文会透进对话框里（用户报的"设置页看不清"就是这个）。
+  for (const key of ['--dsvs-layer1', '--dsvs-layer2', '--dsvs-layer3', '--dsvs-l-layer1', '--dsvs-l-layer2', '--dsvs-l-layer3']) {
+    assert.equal(h.documentElement.style.getPropertyValue(key), '', `${key} 不该由插件派生`)
+  }
 
   const video = backdropVideo(h)
   assert.equal(video.loop, true, '背景循环播放')
@@ -624,7 +629,7 @@ test('透明度控件：背景层建好后出现圆钮，面板默认收起', as
   assert.ok(panel(h), '面板在（但收着）')
   assert.equal(panel(h).getAttribute('data-open'), '0')
   assert.equal(pill(h).getAttribute('aria-label'), '聊天背景透明度')
-  assert.equal(ranges(h).length, 2, '两个滑块：面板不透明度 / 视频蒙版')
+  assert.equal(ranges(h).length, 2, '两个滑块：画布不透明度 / 视频蒙版')
   // 初始位置要对上当前配置（surface 0.2 / veil 0.14）。
   assert.equal(ranges(h)[0].value, '20')
   assert.equal(ranges(h)[1].value, '14')

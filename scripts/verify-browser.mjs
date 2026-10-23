@@ -490,7 +490,14 @@ try {
   assert(stageB.datasetOn === 'on', 'B6 html[data-dsvs=on] 已打开半透明表面', stageB)
   assert(stageB.bodyBackground === 'rgba(0, 0, 0, 0)' || stageB.bodyBackground === 'transparent', 'B7 body 底色已让开', stageB)
   assert(/rgba\(/u.test(stageB.tokenBase), 'B8 --dsw-alias-bg-base 变成半透明', stageB)
-  assert(/rgba\(/u.test(stageB.tokenLayer1), 'B9 --dsw-alias-bg-layer-1 变成半透明', stageB)
+  // **layer-1/2/3 必须保持内核原生的不透明色** —— 对话框/弹层/设置页用的就是这几层，
+  // 一透明背后的正文就透进来了（用户报的"打开设置看不清"）。这一条是那条报障的守卫。
+  // （精确的解析值在下面用 probe 量，这里先看声明本身不再是我们写的半透明 rgba。）
+  assert(
+    !/rgba\([^)]*,\s*0?\.[0-9]/u.test(stageB.tokenLayer1),
+    'B9 --dsw-alias-bg-layer-1 不再是半透明 rgba（弹层/设置页可读）',
+    stageB,
+  )
   assert(/rgba\(/u.test(stageB.tokenSidebar), 'B10 侧栏底色变成半透明', stageB)
   assert(
     stageB.tokenOverlay === '' || !/rgba\([^)]*,\s*0\.\d/u.test(stageB.tokenOverlay) || true,
@@ -537,14 +544,34 @@ try {
     return parts.length >= 4 ? Number(parts[3]) : 1
   }
   // 期望值跟 `lib/config.js` 的默认值绑在一起：surface 0.2 / veil 0.14（暗），
-  // surfaceLight 0.6 / veilLight 0.1（亮）；派生层是 base + 0.1 / + 0.16 / + 0.2 / + 0.06。
+  // surfaceLight 0.6 / veilLight 0.1（亮）；画布派生侧栏 = base + 0.06。
+  // **layer-1/2/3 不派生**，所以它们应当等于内核原生值（不透明）。
   assert(alpha(resolved.light.base) === 0.6, 'B15 亮主题：--dsw-alias-bg-base 解析成 0.6', resolved)
-  assert(alpha(resolved.light.layer1) === 0.7, 'B16 亮主题：layer-1 解析成 0.7（比底色更实）', resolved)
+  assert(alpha(resolved.light.layer1) === 1, 'B16 亮主题：layer-1 保持不透明（原生值）', resolved)
   assert(alpha(resolved.light.sidebar) === 0.66, 'B17 亮主题：侧栏解析成 0.66', resolved)
   assert(alpha(resolved.light.overlay) === 1, 'B18 亮主题：弹层 token 保持不透明（可读性优先）', resolved)
   assert(alpha(resolved.dark.base) === 0.2, 'B19 暗主题：--dsw-alias-bg-base 解析成 0.2（视频看得清）', resolved)
-  assert(alpha(resolved.dark.layer1) === 0.3, 'B20 暗主题：layer-1 解析成 0.3', resolved)
+  assert(alpha(resolved.dark.layer1) === 1, 'B20 暗主题：layer-1 保持不透明（原生值）', resolved)
   assert(alpha(resolved.dark.overlay) === 1, 'B21 暗主题：弹层 token 保持不透明', resolved)
+
+  // ── 对话框本体：设置页/模态用的就是 `_dialog_*{background: var(--dsw-alias-bg-layer-2)}`。
+  //    直接量它计算后的颜色，证明"弹层真的不透了"（不是只看了 token 的解析值）。
+  const dialogPaint = await cdp.evaluate(`(() => {
+    const probe = document.createElement('div')
+    probe.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px;'
+    document.body.appendChild(probe)
+    const read = (token) => { probe.style.backgroundColor = ''; probe.style.backgroundColor = 'var(' + token + ')'; return getComputedStyle(probe).backgroundColor }
+    const light = read('--dsw-alias-bg-layer-2')
+    document.body.setAttribute('data-ds-dark-theme', '')
+    const dark = read('--dsw-alias-bg-layer-2')
+    document.body.removeAttribute('data-ds-dark-theme')
+    // 真正的对话框元素（如果有模态开着）
+    const dialog = document.querySelector('[class*="_dialog_"]')
+    const live = dialog === null ? null : getComputedStyle(dialog).backgroundColor
+    probe.remove()
+    return { light, dark, live }
+  })()`)
+  assert(alpha(dialogPaint.light) === 1 && alpha(dialogPaint.dark) === 1, 'B22 对话框底色（layer-2）两个主题都不透明', dialogPaint)
 
   // ── 等背景视频真的解码出画面 ──
   const decoded = await cdp.evaluate(`new Promise((resolve) => {
@@ -653,7 +680,7 @@ try {
     }
   })()`)
   assert(pill.missing !== true, 'E1 右下角有透明度调节圆钮', pill)
-  assert(pill.ranges === 2, 'E2 面板里有两个滑块（面板不透明度 / 视频蒙版）', pill)
+  assert(pill.ranges === 2, 'E2 面板里有两个滑块（画布不透明度 / 视频蒙版）', pill)
   assert(pill.open === '0', 'E3 面板默认收起', pill)
   assert(Number(pill.opacity) < 0.6, 'E4 圆钮平时是半透明的（不碍眼）', pill)
 
