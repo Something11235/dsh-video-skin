@@ -282,6 +282,21 @@ const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-chrome-
 const shotDir = args.shotDir !== '' ? args.shotDir : profileDir
 fs.mkdirSync(shotDir, { recursive: true })
 
+// 开跑前先清掉上一次留下的覆盖文件。
+//
+// 为什么必须做：滑块的值会落到 `$DSH_HOME/dsh-video-skin.json`，而 B 阶段断言的是
+// **默认配置**（surface 0.2 / veil 0.14 / panel 1）。上一次跑如果在中途异常退出（比如
+// 断言抛了）就不会走到「恢复默认」，那份文件留在盘上，下一次跑 B 阶段就会读到 0/0.6/0.6
+// 然后一片假红。清理放在最前面，这个验证才是可重复的。
+const overrideFile = args.dshHome === '' ? '' : path.join(args.dshHome, 'dsh-video-skin.json')
+if (overrideFile !== '') {
+  try {
+    fs.rmSync(overrideFile, { force: true })
+  } catch {
+    /* 本来就没有 */
+  }
+}
+
 const child = spawn(
   browser,
   [
@@ -680,7 +695,7 @@ try {
     }
   })()`)
   assert(pill.missing !== true, 'E1 右下角有透明度调节圆钮', pill)
-  assert(pill.ranges === 2, 'E2 面板里有两个滑块（画布不透明度 / 视频蒙版）', pill)
+  assert(pill.ranges === 3, 'E2 面板里有三个滑块（画布 / 视频蒙版 / 面板）', pill)
   assert(pill.open === '0', 'E3 面板默认收起', pill)
   assert(Number(pill.opacity) < 0.6, 'E4 圆钮平时是半透明的（不碍眼）', pill)
 
@@ -741,8 +756,8 @@ try {
   assert(opened.open === '1', 'E8 点圆钮真的展开了面板', opened)
   assert(/文字对比度/u.test(opened.badge), 'E9 面板给出实时的文字对比度读数', opened)
   assert(
-    opened.notes.length === 2 && /暗色/u.test(opened.notes[0]) && /亮色/u.test(opened.notes[0]),
-    'E10 读数里把暗/亮两个主题都写出来',
+    opened.notes.length === 3 && /暗色/u.test(opened.notes[0]) && /亮色/u.test(opened.notes[0]),
+    'E10 三行读数都在（暗/亮两个主题 + 面板不透明度说明）',
     opened,
   )
   await shot(cdp, path.join(shotDir, `e2e-4-knobs${args.suffix}.png`))
@@ -806,6 +821,58 @@ try {
       applied,
     )
     assert(applied.dark.surfaceLightVar === '0.4', 'E14 surfaceLight 当场派生出来', applied)
+
+    // ── 面板不透明度：默认原生不透明（B22 已经量过），拖到 60% 才覆盖 ──
+    const panelKnob = await cdp.evaluate(`(() => {
+      const panel = document.querySelector('#dsvs-knobs')
+      const ranges = panel.querySelectorAll('input[type=range]')
+      const probe = document.createElement('div')
+      probe.style.cssText = 'position:absolute;left:-9999px'
+      document.body.appendChild(probe)
+      const read = (token) => {
+        probe.style.backgroundColor = ''
+        probe.style.backgroundColor = 'var(' + token + ')'
+        return getComputedStyle(probe).backgroundColor
+      }
+      const before = { attr: document.documentElement.hasAttribute('data-dsvs-panel'), layer2: read('--dsw-alias-bg-layer-2') }
+      ranges[2].value = '60'
+      ranges[2].dispatchEvent(new Event('input', { bubbles: true }))
+      ranges[2].dispatchEvent(new Event('change', { bubbles: true }))
+      const after = {
+        attr: document.documentElement.hasAttribute('data-dsvs-panel'),
+        layer2: read('--dsw-alias-bg-layer-2'),
+        var2: document.documentElement.style.getPropertyValue('--dsvs-panel-2'),
+        readout: ranges[2].parentNode.querySelector('.dsvs-knobs-value').textContent,
+      }
+      document.body.setAttribute('data-ds-dark-theme', '')
+      const darkLayer2 = read('--dsw-alias-bg-layer-2')
+      document.body.removeAttribute('data-ds-dark-theme')
+      ranges[2].value = '100'
+      ranges[2].dispatchEvent(new Event('change', { bubbles: true }))
+      const restored = {
+        attr: document.documentElement.hasAttribute('data-dsvs-panel'),
+        layer2: read('--dsw-alias-bg-layer-2'),
+      }
+      probe.remove()
+      return { before, after, darkLayer2, restored }
+    })()`)
+    assert(
+      panelKnob.before.attr === false && /^rgb\(/u.test(panelKnob.before.layer2),
+      'E14a 面板不透明度默认 100%：不挂开关属性、layer-2 是内核原生不透明色',
+      panelKnob,
+    )
+    assert(
+      panelKnob.after.attr === true && /rgba\([^)]*,\s*0\.66\)/u.test(panelKnob.after.layer2),
+      'E14b 拖到 60% 后 layer-2 变成 0.66 alpha（第二层留 6% 高差）',
+      panelKnob,
+    )
+    assert(/rgba\([^)]*,\s*0\.66\)/u.test(panelKnob.darkLayer2), 'E14c 暗主题同样生效', panelKnob)
+    assert(/60%/u.test(panelKnob.after.readout), 'E14d 读数跟着走', panelKnob)
+    assert(
+      panelKnob.restored.attr === false && /^rgb\(/u.test(panelKnob.restored.layer2),
+      'E14e 拖回 100% 恢复内核原生不透明色',
+      panelKnob,
+    )
 
     // 写盘是异步的。
     let onDisk = null

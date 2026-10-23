@@ -257,15 +257,26 @@ test('clearOverride 把 background 段清空时连段一起删掉', () => {
   assert.equal('background' in raw, false)
 })
 
-test('readOverride 只认可写的四个键，且只认有限数', () => {
+test('readOverride 只认可写的五个键，且只认有限数', () => {
   const home = tmpdir()
   fs.writeFileSync(
     path.join(home, HOME_CONFIG_FILE),
-    JSON.stringify({ background: { surface: 0.4, veil: 'no', surfaceLight: null, delayMs: 5, veilLight: 0.2 } }),
+    JSON.stringify({
+      background: { surface: 0.4, veil: 'no', surfaceLight: null, delayMs: 5, veilLight: 0.2, panel: 1 },
+    }),
   )
-  assert.deepEqual(readOverride(home), { surface: 0.4, veilLight: 0.2 })
+  assert.deepEqual(readOverride(home), { surface: 0.4, veilLight: 0.2, panel: 1 })
   assert.deepEqual(readOverride(''), {}, '空 homeDir 直接返回空')
-  assert.deepEqual([...OVERRIDE_KEYS].sort(), ['surface', 'surfaceLight', 'veil', 'veilLight'])
+  assert.deepEqual([...OVERRIDE_KEYS].sort(), ['panel', 'surface', 'surfaceLight', 'veil', 'veilLight'])
+})
+
+test('panel 默认 1（原生不透明），并且会被夹到 0..1', () => {
+  const plain = resolveConfig({}, { packageRoot, routes: ROUTES, version: 'test' })
+  assert.equal(plain.client.background.panel, 1, '默认必须是原生不透明 —— 弹层要能读')
+  for (const [value, expected] of [[0.55, 0.55], [9, 1], [-3, 0]]) {
+    const { client } = resolveConfig({ background: { panel: value } }, { packageRoot, routes: ROUTES, version: 'test' })
+    assert.equal(client.background.panel, expected, `panel=${value} 应夹到 ${expected}`)
+  }
 })
 
 test('写回的值经过 resolveConfig 后真的生效（滑块 → 文件 → 页面）', () => {

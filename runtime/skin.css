@@ -296,6 +296,24 @@ html[data-dsvs="on"] body[data-ds-dark-theme] {
   --dsw-specific-sidebar-fill: rgba(27, 27, 28, var(--dsvs-sidebar, 0.26)) !important;
 }
 
+/* 抬起来的表面（对话框/弹层/菜单/卡片/设置页）的可选半透明。
+ *
+ * **默认不生效**：只有 `data-dsvs-panel` 挂上（滑块从 100% 往下拖）时才覆盖这三层。
+ * 不挂属性时保留内核原生色 —— 那是最准的，也是"设置页看不清"修好之后的行为。
+ *
+ * 想玩磨砂玻璃的人自己往下调，但要清楚代价：弹层背后正在滚动的内容会透进来。 */
+html[data-dsvs="on"][data-dsvs-panel] body {
+  --dsw-alias-bg-layer-1: rgba(255, 255, 255, var(--dsvs-panel-1, 1)) !important;
+  --dsw-alias-bg-layer-2: rgba(255, 255, 255, var(--dsvs-panel-2, 1)) !important;
+  --dsw-alias-bg-layer-3: rgba(255, 255, 255, var(--dsvs-panel-3, 1)) !important;
+}
+
+html[data-dsvs="on"][data-dsvs-panel] body[data-ds-dark-theme] {
+  --dsw-alias-bg-layer-1: rgba(35, 35, 36, var(--dsvs-panel-1, 1)) !important;
+  --dsw-alias-bg-layer-2: rgba(41, 41, 41, var(--dsvs-panel-2, 1)) !important;
+  --dsw-alias-bg-layer-3: rgba(47, 47, 49, var(--dsvs-panel-3, 1)) !important;
+}
+
 /* reduced-motion 下不播背景视频（只剩蒙版+半透明表面，观感仍然成立）。 */
 @media (prefers-reduced-motion: reduce) {
   #dsvs-backdrop-video {

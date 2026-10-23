@@ -40,8 +40,10 @@ then fading into the app, and **skippable with a click**.
   view with `--dsw-alias-bg-layer-1/2/3` (`_dialog_* { background: var(--dsw-alias-bg-layer-2) }`), so
   those tokens are deliberately **left untouched** — otherwise the scrolling text behind a dialog shows
   through it and neither layer is readable.
-- A **transparency slider in the UI** (bottom-right pill): two sliders, three presets, and a live
-  body-text contrast readout; changes apply on refresh with no DSH restart.
+- A **transparency panel in the UI** (bottom-right pill): three sliders — canvas, video scrim, and
+  **raised surfaces** (dialogs/settings) — plus three presets and a live body-text contrast readout.
+  The surface slider defaults to **100% (kernel-native opaque)**; dial it down for a frosted look.
+  Changes persist and apply on refresh with no DSH restart.
 - **Zero dependencies.** The host half imports only `node:` builtins; the browser half is one inline
   script. Nothing in the built artifact has an `import` — which is also why a plain `github:` install
   works with **no build step and no `prepare` script**.
@@ -178,7 +180,7 @@ against a real HTTP server for the Range, `ETag`, `304`, `416` and cache-header 
 Two more suites need a live target:
 
 ```powershell
-# 75 assertions (Electron-equivalent autoplay) / 65 (plain browser) in a real headless Chromium over CDP:
+# 81 assertions (Electron-equivalent autoplay) / 66 (plain browser) in a real headless Chromium over CDP:
 #   --autoplay allow (Electron-equivalent): unmuted playback, no sound button,
 #                                          webkitAudioDecodedByteCount > 0 (the audio track really decodes)
 #   --autoplay block (plain browser)      : muted fallback, sound button visible, a real mouse click on it

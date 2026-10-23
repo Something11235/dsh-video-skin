@@ -629,10 +629,13 @@ test('透明度控件：背景层建好后出现圆钮，面板默认收起', as
   assert.ok(panel(h), '面板在（但收着）')
   assert.equal(panel(h).getAttribute('data-open'), '0')
   assert.equal(pill(h).getAttribute('aria-label'), '聊天背景透明度')
-  assert.equal(ranges(h).length, 2, '两个滑块：画布不透明度 / 视频蒙版')
-  // 初始位置要对上当前配置（surface 0.2 / veil 0.14）。
+  assert.equal(ranges(h).length, 3, '三个滑块：画布不透明度 / 视频蒙版 / 面板不透明度')
+  // 初始位置要对上当前配置（surface 0.2 / veil 0.14 / panel 1）。
   assert.equal(ranges(h)[0].value, '20')
   assert.equal(ranges(h)[1].value, '14')
+  assert.equal(ranges(h)[2].value, '100', '面板不透明度默认 100%（原生不透明）')
+  // 默认不覆盖 layer token、也不挂开关属性。
+  assert.equal(h.documentElement.hasAttribute('data-dsvs-panel'), false)
 })
 
 test('background.controls:false 时完全不注入控件', async () => {
@@ -696,9 +699,44 @@ test('拖滑块立刻改表面不透明度，松手才写回宿主', async () =>
   assert.equal(sent.length, 1, '松手才写一次')
   assert.equal(sent[0].method, 'POST')
   assert.deepEqual(JSON.parse(sent[0].body), {
-    // 四个键一起写：只写 surface 的话，亮主题那边有显式的 surfaceLight 压着，拖了等于没拖。
-    background: { surface: 0.8, surfaceLight: 1, veil: 0.14, veilLight: 0.098 },
+    // 五个键一起写：只写 surface 的话，亮主题那边有显式的 surfaceLight 压着，拖了等于没拖。
+    // panel 也一起写，否则"面板不透明度"调完刷新就丢。
+    background: { surface: 0.8, surfaceLight: 1, veil: 0.14, veilLight: 0.098, panel: 1 },
   })
+})
+
+test('面板不透明度：默认 100% 不覆盖内核 token，调低才挂 data-dsvs-panel', async () => {
+  const h = createHarness()
+  const calls = spyFetch(h)
+  h.run(RUNTIME, knobConfig())
+  await reachBackdrop(h)
+
+  const root = h.documentElement
+  // 默认：不挂属性、不写 layer 变量 —— 内核原生不透明色原样保留。
+  assert.equal(root.hasAttribute('data-dsvs-panel'), false)
+  assert.equal(root.style.getPropertyValue('--dsvs-panel-2'), '')
+
+  const panelInput = ranges(h)[2]
+  panelInput.value = '60'
+  panelInput.dispatchEvent({ type: 'input' })
+  assert.equal(root.getAttribute('data-dsvs-panel'), 'on', '调低后开关属性挂上，CSS 规则才生效')
+  assert.equal(root.style.getPropertyValue('--dsvs-panel-1'), '0.6')
+  assert.equal(root.style.getPropertyValue('--dsvs-panel-2'), '0.66', '每层留一点高差，保持层次感')
+  assert.equal(root.style.getPropertyValue('--dsvs-panel-3'), '0.7')
+
+  panelInput.dispatchEvent({ type: 'change' })
+  await flush()
+  const sent = writes(calls)
+  assert.equal(sent.length, 1)
+  assert.equal(JSON.parse(sent[0].body).background.panel, 0.6, '面板不透明度也要写回')
+
+  // 拖回 100% → 属性摘掉、变量清掉，回到"完全不覆盖"。
+  panelInput.value = '100'
+  panelInput.dispatchEvent({ type: 'change' })
+  await flush()
+  assert.equal(root.hasAttribute('data-dsvs-panel'), false, '回到 100% 就该恢复内核原生色')
+  assert.equal(root.style.getPropertyValue('--dsvs-panel-2'), '')
+  assert.equal(JSON.parse(writes(calls)[1].body).background.panel, 1)
 })
 
 test('预设按钮一键切换，并且会写回', async () => {
@@ -719,7 +757,7 @@ test('预设按钮一键切换，并且会写回', async () => {
   const sent = writes(calls)
   assert.equal(sent.length, 1)
   assert.deepEqual(JSON.parse(sent[0].body), {
-    background: { surface: 0, surfaceLight: 0.4, veil: 0, veilLight: 0 },
+    background: { surface: 0, surfaceLight: 0.4, veil: 0, veilLight: 0, panel: 1 },
   })
 })
 

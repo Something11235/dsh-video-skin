@@ -844,15 +844,36 @@
     if (root && root.style && typeof root.style.setProperty === 'function') {
       // 派生值在这里算好、写成独立变量：颜色函数里不出现 calc()，值本身也可被断言。
       //
-      // **只有"画布"和"侧栏"跟着滑块走**。`layer1/2/3`（对话框、弹层、菜单、卡片、
-      // 设置页）**故意不派生** —— 它们必须保持内核原生的不透明色，否则背后的正文会
-      // 透进对话框里，两段文字叠在一起就没法读。详见 skin.css 里那段注释。
+      // **只有"画布"和"侧栏"跟着 surface 滑块走**；`layer1/2/3`（对话框、弹层、菜单、
+      // 卡片、设置页）由**另一个**旋钮 `panel` 控制，而且**默认 1 = 完全不覆盖**，
+      // 保留内核原生不透明色。原因见 skin.css 里那段注释。
       var setSurface = function (prefix, base) {
         root.style.setProperty(prefix + 'surface', String(base))
         root.style.setProperty(prefix + 'sidebar', String(Math.min(1, base + 0.06)))
       }
       setSurface('--dsvs-', surface)
       setSurface('--dsvs-l-', surfaceLight)
+
+      // 抬起来的表面：panel=1 就**不覆盖**（去掉 data-dsvs-panel，CSS 里那两条规则不生效）；
+      // panel<1 时才写派生值并挂上属性。用属性开关而不是把值写成 1：
+      // 写 1 也等于不透明，但那用的是我们估的颜色，不是内核原生色。
+      var panel = num(bg.panel, 1, 0, 1)
+      if (panel < 0.999) {
+        // 三位小数：0.6 + 0.06 在浮点里是 0.6599999999999999，写进 CSS 难看也不好断言。
+        var round3 = function (value) {
+          return String(Math.round(Math.min(1, value) * 1000) / 1000)
+        }
+        root.style.setProperty('--dsvs-panel-1', round3(panel))
+        root.style.setProperty('--dsvs-panel-2', round3(panel + 0.06))
+        root.style.setProperty('--dsvs-panel-3', round3(panel + 0.1))
+        root.setAttribute('data-dsvs-panel', 'on')
+      } else {
+        root.removeAttribute('data-dsvs-panel')
+        root.style.removeProperty('--dsvs-panel-1')
+        root.style.removeProperty('--dsvs-panel-2')
+        root.style.removeProperty('--dsvs-panel-3')
+      }
+
       root.style.setProperty('--dsvs-veil', String(veil))
       root.style.setProperty('--dsvs-l-veil', String(veilLight))
     }
@@ -1072,7 +1093,7 @@
 
   /**
    * 把当前的有效旋钮值取出来（面板初始位置要用）。
-   * @returns {{ surface: number, surfaceLight: number, veil: number, veilLight: number }} 当前值。
+   * @returns {{ surface: number, surfaceLight: number, veil: number, veilLight: number, panel: number }} 当前值。
    */
   function currentKnobs() {
     var bg = isObject(liveCfg.background) ? liveCfg.background : {}
@@ -1083,6 +1104,8 @@
       surfaceLight: num(bg.surfaceLight, Math.min(1, surface + 0.4), 0, 1),
       veil: veil,
       veilLight: num(bg.veilLight, veil * 0.7, 0, 0.92),
+      // 抬起来的表面：默认 1 = 原生不透明。
+      panel: num(bg.panel, 1, 0, 1),
     }
   }
 
@@ -1287,7 +1310,8 @@
     panel.appendChild(presets)
 
     /** 造一行"标签 + 滑块 + 读数"。 */
-    function makeRow(key, label, max) {      var row = el('div', 'dsvs-knobs-row')
+    function makeRow(key, label, max) {
+      var row = el('div', 'dsvs-knobs-row')
       var head2 = el('div', 'dsvs-knobs-label')
       head2.appendChild(el('span', null, label))
       var output = el('span', 'dsvs-knobs-value')
@@ -1308,10 +1332,11 @@
     }
 
     var rows = [
-      // 名字里别写"面板"：这个旋钮只影响**画布和侧栏**，弹层/对话框/设置页是内核原生
-      // 不透明色（否则背后的正文会透进对话框里）。见 skin.css 里那段注释。
+      // 名字里别写"面板"：这个旋钮只影响**画布和侧栏**，弹层/对话框/设置页由下面第三行管。
       makeRow('surface', '画布不透明度', 100),
       makeRow('veil', '视频蒙版', 92),
+      // 抬起来的表面：默认 100% = 原生不透明。想玩磨砂玻璃才往下拖。
+      makeRow('panel', '面板不透明度', 100),
     ]
 
     var badge = el('div', 'dsvs-knobs-badge')
@@ -1327,19 +1352,26 @@
     function syncInputs(values) {
       rows[0].input.value = String(Math.round(values.surface * 100))
       rows[1].input.value = String(Math.round(values.veil * 100))
+      rows[2].input.value = String(Math.round(num(values.panel, 1, 0, 1) * 100))
       refreshLabels(values)
     }
 
-    /** 更新两行滑块旁的读数（暗/亮两个主题各是多少）。 */
+    /** 更新三行滑块旁的读数（暗/亮两个主题各是多少）。 */
     function refreshLabels(values) {
       var surfaceLight = num(values.surfaceLight, Math.min(1, values.surface + 0.4), 0, 1)
       var veilLight = num(values.veilLight, values.veil * 0.7, 0, 0.92)
+      var panel = num(values.panel, 1, 0, 1)
       rows[0].output.textContent = Math.round(values.surface * 100) + '%'
       rows[0].note.textContent =
         '暗色 ' + Math.round(values.surface * 100) + '% · 亮色 ' + Math.round(surfaceLight * 100) + '%'
       rows[1].output.textContent = Math.round(values.veil * 100) + '%'
       rows[1].note.textContent =
         '暗色 ' + Math.round(values.veil * 100) + '% · 亮色 ' + Math.round(veilLight * 100) + '%'
+      rows[2].output.textContent = Math.round(panel * 100) + '%'
+      rows[2].note.textContent =
+        panel >= 0.999
+          ? '原生不透明 · 弹层/设置页读起来最稳'
+          : '调低会透出背后的内容 · 弹层可能不好读'
       for (var index = 0; index < presetButtons.length; index += 1) {
         var preset = presetButtons[index].preset
         var active =
@@ -1384,11 +1416,13 @@
     function applyFromInputs(options) {
       var surface = Number(rows[0].input.value) / 100
       var veil = Number(rows[1].input.value) / 100
+      var panel = Number(rows[2].input.value) / 100
       var values = {
         surface: surface,
         surfaceLight: Math.min(1, surface + 0.4),
         veil: veil,
         veilLight: veil * 0.7,
+        panel: panel,
       }
       liveCfg = mergeConfig(liveCfg, { background: values })
       api.config = liveCfg
