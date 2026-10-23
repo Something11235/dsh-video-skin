@@ -26,6 +26,14 @@ import { fileURLToPath } from 'node:url'
 import { loadConfig, resolveDshHome, clearOverride, writeOverride, OVERRIDE_KEYS } from './lib/config.js'
 import { buildInjectionRows } from './lib/injections.js'
 import { contentTypeFor, isPlainObject, parseRange } from './lib/route.js'
+import {
+  THEME_MARKER_FILE,
+  decideAutoDark,
+  isThemePreference,
+  pickThemeDescriptor,
+  readThemeMarker,
+  writeThemeMarker,
+} from './lib/theme.js'
 
 /** Cordis 诊断用的插件名。 */
 export const name = 'video-skin'
@@ -43,9 +51,11 @@ export const BACKGROUND_ROUTE = `${ROUTE_PREFIX}/background.mp4`
 export const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 /** 界面滑块写回的位置（POST 保存 / DELETE 恢复默认）。 */
 export const OVERRIDE_ROUTE = `${ROUTE_PREFIX}/override`
+/** 主题联动：GET 读状态、POST 撤销（一次性的"自动切深色"要能退回去）。 */
+export const THEME_ROUTE = `${ROUTE_PREFIX}/theme`
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.1.2'
+export const VERSION = '0.1.3'
 
 /** 路由表：同时是配置解析的输入。 */
 const ROUTES = Object.freeze({
@@ -53,6 +63,7 @@ const ROUTES = Object.freeze({
   background: BACKGROUND_ROUTE,
   config: CONFIG_ROUTE,
   override: OVERRIDE_ROUTE,
+  theme: THEME_ROUTE,
 })
 
 /** 运行时文本文件所在目录（相对包根）。 */
@@ -197,6 +208,79 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * settings 服务（内核的配置表单服务）；晚到也没关系，路由会自己判断。
+   * @type {null | { describe: (options?: { redactSecrets?: boolean }) => unknown, update: (ns: string, patch: object) => Promise<void>, writable?: boolean }}
+   */
+  let settingsService = null
+
+  /**
+   * 读主题在 settings 里的当前值。
+   * @returns {{ preference?: unknown, revision?: number } | null} 主题描述符；服务没就绪时 null。
+   */
+  const readThemeState = () => {
+    if (settingsService === null || typeof settingsService.describe !== 'function') return null
+    try {
+      return pickThemeDescriptor(settingsService.describe({ redactSecrets: true }))
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 把主题偏好写回去（**只走内核 settings 服务**，绝不手改用户的 profile YAML）。
+   * @param {'light' | 'dark' | 'system'} preference 目标偏好。
+   * @returns {Promise<boolean>} 是否写成功。
+   */
+  const writeThemePreference = async (preference) => {
+    if (settingsService === null || typeof settingsService.update !== 'function') return false
+    if (!isThemePreference(preference)) return false
+    try {
+      await settingsService.update('ui-theme', { preference })
+      return true
+    } catch (error) {
+      warn(`切换主题失败（不影响背景本身）：${describe(error)}`)
+      return false
+    }
+  }
+
+  /**
+   * 首次启动的"浅色→深色"一次性联动。
+   *
+   * `theme.autoDark` 关掉就不做；已经评估过（标记文件存在）也绝不再做 ——
+   * 那是"用户自己切回浅色"的唯一保护。写标记放在切换之前/之后都行，
+   * 但必须在**任何**分支上落盘，否则下次启动又会重新评估。
+   * @returns {Promise<void>}
+   */
+  const applyThemeLinkOnce = async () => {
+    let autoDark = true
+    try {
+      autoDark = current().client.theme?.autoDark !== false
+    } catch {
+      /* 配置坏了就按默认（开）处理 */
+    }
+    const marker = readThemeMarker(homeDir)
+    const themeState = readThemeState()
+    const decision = decideAutoDark({ autoDark, marker, preference: themeState?.preference })
+    if (decision.action === 'skip') return
+    if (decision.action === 'mark') {
+      // 已经是深色：只落标记，避免用户以后切浅色时被我们再改回去。
+      writeThemeMarker(homeDir, { evaluated: true, switched: false, at: new Date().toISOString() })
+      return
+    }
+    const previous = decision.previous
+    const switched = await writeThemePreference('dark')
+    if (!switched) return
+    writeThemeMarker(homeDir, {
+      evaluated: true,
+      switched: true,
+      previous: previous,
+      notified: false,
+      at: new Date().toISOString(),
+    })
+    info(`检测到浅色主题（${previous}），已一次性切到深色，让聊天背景看得清；可在提示里恢复`)
+  }
+
   // ── ① 注入行：必须**同步**注册，且不能等到任何服务就绪 ──
   ctx.on('webserver/index-inject', (table) => {
     if (!Array.isArray(table)) return
@@ -215,7 +299,21 @@ export function apply(ctx) {
     }
   })
 
-  // ── ② 路由：webServer 是可选能力，晚到就晚接，不阻塞 apply ──
+  // ── ② 主题联动：settings 服务就绪后做一次"浅色→深色"（只做一次，可撤销） ──
+  ctx.inject(['settings'], (child) => {
+    settingsService = child.settings ?? null
+    child.effect(() => {
+      void applyThemeLinkOnce().catch((error) => {
+        warn(`主题联动失败（不影响背景本身）：${describe(error)}`)
+      })
+      return () => {
+        // 插件的 effect 结束时不要再持有服务引用（避免热重载后拿到旧上下文）。
+        settingsService = null
+      }
+    })
+  })
+
+  // ── ③ 路由：webServer 是可选能力，晚到就晚接，不阻塞 apply ──
   ctx.inject(['webServer'], (child) => {
     child.effect(() => {
       /** @type {Array<() => void>} */
@@ -385,6 +483,118 @@ export function apply(ctx) {
               } catch (error) {
                 reply(500, { ok: false, error: describe(error) })
               }
+            })
+          },
+        }),
+      )
+
+      // 主题联动状态 / 撤销。
+      //
+      // GET  → { enabled, preference, switched, previous, notified }
+      // POST → { action: 'notified' | 'revert' }
+      //   notified：用户看过那条提示了，别再提；
+      //   revert  ：把主题按标记里记的原值写回去（浅色用户点一下就能变回来）。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: THEME_ROUTE,
+          handler: (req, res) => {
+            /** @param {number} status @param {unknown} body */
+            const reply = (status, body) => {
+              const text = JSON.stringify(body)
+              res.writeHead(status, {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Length': Buffer.byteLength(text),
+                'Cache-Control': 'no-store',
+              })
+              res.end(text)
+            }
+            /** 当前状态（标记 + 服务里读到的偏好）。 */
+            const state = () => {
+              const marker = readThemeMarker(homeDir) ?? {}
+              const themeState = readThemeState()
+              return {
+                enabled: current().client.theme?.autoDark !== false,
+                preference: themeState?.preference ?? null,
+                switched: marker.switched === true,
+                previous: isThemePreference(marker.previous) ? marker.previous : null,
+                notified: marker.notified === true,
+                writable: settingsService?.writable !== false,
+              }
+            }
+
+            const method = String(req.method ?? 'GET').toUpperCase()
+            if (method === 'GET') {
+              reply(200, { ok: true, ...state() })
+              return
+            }
+            if (method !== 'POST') {
+              reply(405, { ok: false, error: 'use GET or POST' })
+              return
+            }
+
+            /** @type {Buffer[]} */
+            const chunks = []
+            let size = 0
+            let aborted = false
+            req.on('error', () => {
+              aborted = true
+              reply(400, { ok: false, error: 'request stream failed' })
+            })
+            req.on('data', (chunk) => {
+              if (aborted) return
+              size += chunk.length
+              if (size > OVERRIDE_BODY_LIMIT) {
+                aborted = true
+                reply(413, { ok: false, error: 'body too large' })
+                req.destroy()
+                return
+              }
+              chunks.push(chunk)
+            })
+            req.on('end', () => {
+              if (aborted) return
+              /** @type {Record<string, unknown>} */
+              let body = {}
+              if (chunks.length > 0) {
+                try {
+                  const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+                  body = isPlainObject(parsed) ? parsed : {}
+                } catch {
+                  reply(400, { ok: false, error: 'invalid JSON' })
+                  return
+                }
+              }
+              const action = typeof body.action === 'string' ? body.action : ''
+              const marker = readThemeMarker(homeDir) ?? {}
+
+              if (action === 'notified') {
+                writeThemeMarker(homeDir, { ...marker, notified: true })
+                reply(200, { ok: true, ...state() })
+                return
+              }
+
+              if (action === 'revert') {
+                const previous = isThemePreference(marker.previous) ? marker.previous : 'system'
+                void writeThemePreference(previous).then((ok) => {
+                  if (!ok) {
+                    reply(409, { ok: false, error: 'theme settings are not writable', ...state() })
+                    return
+                  }
+                  // 撤销之后就不能再自动切了（否则下次启动又变回去，用户会疯）。
+                  writeThemeMarker(homeDir, {
+                    ...marker,
+                    switched: false,
+                    notified: true,
+                    revertedAt: new Date().toISOString(),
+                  })
+                  info(`用户撤销了自动切换，主题已恢复为 ${previous}`)
+                  reply(200, { ok: true, ...state() })
+                })
+                return
+              }
+
+              reply(400, { ok: false, error: "action must be 'notified' or 'revert'" })
             })
           },
         }),

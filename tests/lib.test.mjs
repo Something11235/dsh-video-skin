@@ -32,6 +32,14 @@ import {
   resolveDshHome,
   writeOverride,
 } from '../lib/config.js'
+import {
+  THEME_MARKER_FILE,
+  decideAutoDark,
+  isThemePreference,
+  pickThemeDescriptor,
+  readThemeMarker,
+  writeThemeMarker,
+} from '../lib/theme.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from '../lib/injections.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -320,4 +328,56 @@ test('注入行：配置里的恶意字符串不会闭合 script 元素', () => 
   const rows = buildInjectionRows({ clientConfig: client, cssText: '', jsText: '' })
   assert.equal(rows[1].text.includes('</script'), false)
   assert.equal(rows[0].text.includes('</style'), false)
+})
+
+// ─────────────────── 主题联动（一次性自动切深色） ───────────────────
+
+test('decideAutoDark：四条护栏各自生效', () => {
+  // 关掉就绝不动。
+  assert.equal(decideAutoDark({ autoDark: false, marker: null, preference: 'light' }).action, 'skip')
+  // 已经评估过 → 不动（这是"用户后来自己切回浅色"的唯一保护）。
+  assert.equal(decideAutoDark({ autoDark: true, marker: { evaluated: true }, preference: 'light' }).action, 'skip')
+  // 读不到偏好 → 宁可不做。
+  assert.equal(decideAutoDark({ autoDark: true, marker: null, preference: undefined }).action, 'skip')
+  assert.equal(decideAutoDark({ autoDark: true, marker: null, preference: 'purple' }).action, 'skip')
+  // 已经是深色 → 只落标记，不改。
+  assert.deepEqual(decideAutoDark({ autoDark: true, marker: null, preference: 'dark' }), {
+    action: 'mark',
+    reason: 'already-dark',
+  })
+  // 浅色 / 跟随系统 → 切，并记下原值。
+  for (const previous of ['light', 'system']) {
+    const decision = decideAutoDark({ autoDark: true, marker: null, preference: previous })
+    assert.equal(decision.action, 'switch')
+    assert.equal(decision.previous, previous)
+  }
+})
+
+test('主题标记文件：写进去读得出来，没有就是 null', () => {
+  const home = tmpdir()
+  assert.equal(readThemeMarker(home), null, '没有文件时返回 null')
+  assert.equal(readThemeMarker(''), null, '空 homeDir 返回 null')
+  assert.equal(writeThemeMarker(home, { evaluated: true, switched: true, previous: 'light', notified: false }), true)
+  const marker = readThemeMarker(home)
+  assert.equal(marker.switched, true)
+  assert.equal(marker.previous, 'light')
+  assert.equal(marker.notified, false)
+  // 坏 JSON 不该抛，只当没有。
+  fs.writeFileSync(path.join(home, THEME_MARKER_FILE), '{ not json')
+  assert.equal(readThemeMarker(home), null)
+})
+
+test('pickThemeDescriptor 只认 ui-theme 那一条', () => {
+  assert.equal(pickThemeDescriptor(null), null)
+  assert.equal(pickThemeDescriptor([]), null)
+  assert.equal(pickThemeDescriptor([{ ns: 'agent-default-model', value: {} }]), null)
+  assert.deepEqual(
+    pickThemeDescriptor([
+      { ns: 'agent-default-model', value: { provider: 'x' } },
+      { ns: 'ui-theme', value: { preference: 'system', fontSize: 14 }, revision: 7 },
+    ]),
+    { preference: 'system', revision: 7 },
+  )
+  // 值是脏的也不该抛。
+  assert.deepEqual(pickThemeDescriptor([{ ns: 'ui-theme', value: null }]), { preference: undefined, revision: undefined })
 })

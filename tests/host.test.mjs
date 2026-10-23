@@ -15,7 +15,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE, VERSION, apply } from '../index.js'
+import { BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE, THEME_ROUTE, VERSION, apply } from '../index.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const packageRoot = path.resolve(here, '..')
@@ -93,12 +93,13 @@ function boot(options = {}) {
   }
 }
 
-test('apply() 不抛异常，并且注册了配置/开机/背景/滑块写回四条 exact 路由', () => {
+test('apply() 不抛异常，并且注册了配置/开机/背景/滑块写回/主题联动五条 exact 路由', () => {
   const { ctx } = boot()
+  // injectListeners 记的是 index-inject 的订阅，永远只该有一条。
   assert.equal(ctx.injectListeners.length, 1, '注入订阅必须只有一个')
   assert.deepEqual(
     [...ctx.routes.keys()].sort(),
-    [BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE].sort(),
+    [BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE, THEME_ROUTE].sort(),
   )
 })
 

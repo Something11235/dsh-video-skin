@@ -16,6 +16,9 @@
     "volume": 1,
     "soundLabel": "开启声音"
   },
+  "theme": {
+    "autoDark": true
+  },
   "background": {
     "enabled": true,
     "file": "assets/background.mp4",

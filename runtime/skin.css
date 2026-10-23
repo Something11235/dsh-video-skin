@@ -566,3 +566,112 @@ body:not([data-ds-dark-theme]) .dsvs-knobs-reset {
   opacity: 0.7;
   text-align: right;
 }
+
+/* ─────────────── ④ 主题联动的一次性提示（左下角） ───────────────
+ *
+ * 宿主把浅色用户切到深色之后弹一次，带「恢复浅色」。放在左下角是因为右下角
+ * 已经有透明度圆钮，两个控件不抢位置。层级在圆钮之上、模态之下（和圆钮同一个规矩）。 */
+#dsvs-theme-notice {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 902;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #e6eef8;
+  background: rgba(14, 20, 30, 0.94);
+  border: 1px solid rgba(198, 220, 246, 0.24);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
+  animation: dsvs-notice-in 260ms ease;
+}
+
+body:not([data-ds-dark-theme]) #dsvs-theme-notice {
+  color: #1e2734;
+  background: rgba(252, 253, 255, 0.97);
+  border-color: rgba(20, 30, 45, 0.14);
+  box-shadow: 0 18px 48px rgba(20, 32, 48, 0.22);
+}
+
+@keyframes dsvs-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dsvs-theme-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.dsvs-theme-body {
+  opacity: 0.82;
+}
+
+.dsvs-theme-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.dsvs-theme-action {
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.dsvs-theme-action:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.dsvs-theme-keep {
+  font-weight: 600;
+  color: #cfe4ff;
+  border-color: rgba(158, 203, 255, 0.4);
+  background: rgba(64, 110, 170, 0.28);
+}
+
+.dsvs-theme-keep:hover {
+  background: rgba(64, 110, 170, 0.42);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-theme-action {
+  border-color: rgba(20, 30, 45, 0.12);
+  background: rgba(20, 30, 45, 0.05);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-theme-action:hover {
+  background: rgba(20, 30, 45, 0.1);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-theme-keep {
+  color: #1b4f8a;
+  border-color: rgba(27, 79, 138, 0.35);
+  background: rgba(27, 79, 138, 0.1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #dsvs-theme-notice {
+    animation: none;
+  }
+}
