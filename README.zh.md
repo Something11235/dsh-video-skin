@@ -1,5 +1,7 @@
 # dsh-video-skin
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 DSH 的**视频皮肤**：把一段短片铺成整个 Web 界面的**聊天背景**，并在启动时用另一段短片做**开机动画**——
 **有声**播放、**完整放完**再渐变淡出进界面、**点击画面随时跳过**。
 
