@@ -18,14 +18,22 @@
  *   - 任何一步（读配置、读运行时文件、生成行）出错都只 warn 并跳过，不向上抛。
  *   - 素材文件路径做逃逸防护（`resolveInsidePackage`），配置来自文件也不能读包外。
  */
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { loadConfig, resolveDshHome, clearOverride, writeOverride, OVERRIDE_KEYS } from './lib/config.js'
+import { loadConfig, resolveDshHome, clearOverride, writeOverride, writeMediaConfig, OVERRIDE_KEYS } from './lib/config.js'
 import { buildInjectionRows } from './lib/injections.js'
 import { contentTypeFor, isPlainObject, parseRange } from './lib/route.js'
+import {
+  MEDIA_LIMIT_BYTES,
+  isMediaSlot,
+  mediaRoot,
+  mediaTargetPath,
+  pickExtension,
+} from './lib/media.js'
 import {
   decideThemeLink,
   isThemePreference,
@@ -52,9 +60,11 @@ export const CONFIG_ROUTE = `${ROUTE_PREFIX}/config.json`
 export const OVERRIDE_ROUTE = `${ROUTE_PREFIX}/override`
 /** 主题联动：GET 读状态、POST 撤销（一次性的"自动切深色"要能退回去）。 */
 export const THEME_ROUTE = `${ROUTE_PREFIX}/theme`
+/** 素材管理：POST 上传/开关、DELETE 恢复默认（界面上的"换素材/关掉"）。 */
+export const MEDIA_ROUTE = `${ROUTE_PREFIX}/media`
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.1.4'
+export const VERSION = '0.1.5'
 
 /** 路由表：同时是配置解析的输入。 */
 const ROUTES = Object.freeze({
@@ -63,6 +73,7 @@ const ROUTES = Object.freeze({
   config: CONFIG_ROUTE,
   override: OVERRIDE_ROUTE,
   theme: THEME_ROUTE,
+  media: MEDIA_ROUTE,
 })
 
 /** 运行时文本文件所在目录（相对包根）。 */
@@ -628,6 +639,228 @@ export function apply(ctx) {
               }
 
               reply(400, { ok: false, error: "action must be 'dark' | 'keep' | 'notified' | 'revert'" })
+            })
+          },
+        }),
+      )
+
+      // 素材管理：界面上的"开关 / 换素材 / 恢复默认"。
+      //
+      //   POST   ?slot=boot|background
+      //          · Content-Type: application/json → { enabled: boolean }（只开关）
+      //          · 其余（二进制）→ 把请求体当成视频存下来（上传上限 96 MiB）
+      //   DELETE ?slot=boot|background → 恢复默认素材（删掉配置里的 file）
+      //
+      // 落盘位置固定在 `$DSH_HOME/dsh-video-skin-media/`，文件名带内容哈希：换素材时 URL 必变，
+      // 浏览器不会拿旧视频的缓存。**只接受 mp4/webm/ogv**，其它容器直接 415 —— 与其让用户
+      // 面对黑屏，不如当场说清楚。
+      disposers.push(
+        child.webServer.register({
+          kind: 'exact',
+          path: MEDIA_ROUTE,
+          handler: (req, res) => {
+            /** @param {number} status @param {unknown} body */
+            const reply = (status, body) => {
+              const text = JSON.stringify(body)
+              res.writeHead(status, {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Length': Buffer.byteLength(text),
+                'Cache-Control': 'no-store',
+              })
+              res.end(text)
+            }
+            /** 当前生效的素材状态（改完之后回报给界面）。 */
+            const state = () => {
+              let loaded
+              try {
+                loaded = current()
+              } catch (error) {
+                return { ok: false, error: describe(error) }
+              }
+              const { client, paths, warnings: loadWarnings } = loaded
+              /** @param {'boot' | 'background'} key 槽位。 */
+              const one = (key) => ({
+                enabled: client[key].enabled === true,
+                custom: client[key].custom === true,
+                name: paths[key] === undefined ? '默认素材' : path.basename(paths[key]),
+              })
+              return { ok: true, boot: one('boot'), background: one('background'), warnings: loadWarnings }
+            }
+            /** @param {Record<string, Record<string, unknown>>} patch 素材改动。 */
+            const persist = (patch, notice) => {
+              try {
+                writeMediaConfig({ homeDir, patch })
+              } catch (error) {
+                reply(500, { ok: false, error: `写配置失败：${describe(error)}` })
+                return
+              }
+              if (typeof notice === 'string') info(notice)
+              reply(200, state())
+            }
+
+            const url = new URL(String(req.url ?? '/'), 'http://127.0.0.1')
+            const method = String(req.method ?? 'GET').toUpperCase()
+
+            // GET 不需要 slot：面板打开时拿一次真实状态（快照里没有"当前用的是哪个文件"）。
+            if (method === 'GET') {
+              reply(200, state())
+              return
+            }
+
+            const slot = url.searchParams.get('slot')
+            if (!isMediaSlot(slot)) {
+              reply(400, { ok: false, error: 'slot must be "boot" or "background"' })
+              return
+            }
+
+            if (method === 'DELETE') {
+              persist({ [slot]: { file: undefined, enabled: true } }, `素材已恢复默认：${slot}`)
+              return
+            }
+            if (method !== 'POST') {
+              reply(405, { ok: false, error: 'use POST or DELETE' })
+              return
+            }
+
+            const type = String(req.headers['content-type'] ?? '').toLowerCase()
+            // ① 只开关：JSON 体。
+            if (type.startsWith('application/json')) {
+              /** @type {Buffer[]} */
+              const chunks = []
+              let size = 0
+              let aborted = false
+              req.on('error', () => {
+                aborted = true
+                reply(400, { ok: false, error: 'request stream failed' })
+              })
+              req.on('data', (chunk) => {
+                if (aborted) return
+                size += chunk.length
+                if (size > OVERRIDE_BODY_LIMIT) {
+                  aborted = true
+                  reply(413, { ok: false, error: 'body too large' })
+                  req.destroy()
+                  return
+                }
+                chunks.push(chunk)
+              })
+              req.on('end', () => {
+                if (aborted) return
+                /** @type {Record<string, unknown>} */
+                let body = {}
+                if (chunks.length > 0) {
+                  try {
+                    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+                    body = isPlainObject(parsed) ? parsed : {}
+                  } catch {
+                    reply(400, { ok: false, error: 'invalid JSON' })
+                    return
+                  }
+                }
+                if (typeof body.enabled !== 'boolean') {
+                  reply(400, { ok: false, error: 'enabled must be a boolean' })
+                  return
+                }
+                persist(
+                  { [slot]: { enabled: body.enabled } },
+                  `${slot} ${body.enabled ? '已开启' : '已关闭'}`,
+                )
+              })
+              return
+            }
+
+            // ② 上传：二进制体。
+            const rawName = String(req.headers['x-dsh-filename'] ?? url.searchParams.get('name') ?? '')
+            let filename = rawName
+            try {
+              filename = decodeURIComponent(rawName)
+            } catch {
+              /* 传什么用什么 */
+            }
+            const extension = pickExtension(filename, type)
+            if (extension === undefined) {
+              reply(415, {
+                ok: false,
+                error: 'unsupported media type: 只支持 mp4 / webm / ogv',
+                filename,
+              })
+              req.resume()
+              return
+            }
+
+            const root = mediaRoot(homeDir)
+            const tempPath = path.join(root, `.upload-${process.pid}-${Date.now()}.part`)
+            let failed = false
+            /** @type {import('node:fs').WriteStream | null} */
+            let sink = null
+            const cleanup = () => {
+              try {
+                sink?.destroy()
+              } catch {
+                /* ignore */
+              }
+              fs.rmSync(tempPath, { force: true })
+            }
+            /** @param {number} status @param {Record<string, unknown>} body */
+            const fail = (status, body) => {
+              if (failed) return
+              failed = true
+              cleanup()
+              reply(status, body)
+            }
+            try {
+              fs.mkdirSync(root, { recursive: true })
+              sink = fs.createWriteStream(tempPath)
+            } catch (error) {
+              fail(500, { ok: false, error: `无法创建素材目录：${describe(error)}` })
+              return
+            }
+            const hash = createHash('sha1')
+            let received = 0
+            sink.on('error', (error) => fail(500, { ok: false, error: `写文件失败：${describe(error)}` }))
+            req.on('aborted', () => fail(400, { ok: false, error: 'upload aborted' }))
+            req.on('error', () => fail(400, { ok: false, error: 'request stream failed' }))
+            req.on('data', (chunk) => {
+              if (failed) return
+              received += chunk.length
+              if (received > MEDIA_LIMIT_BYTES) {
+                fail(413, { ok: false, error: `文件太大（上限 ${Math.round(MEDIA_LIMIT_BYTES / 1024 / 1024)} MiB）` })
+                req.destroy()
+                return
+              }
+              hash.update(chunk)
+              if (sink !== null && !sink.write(chunk)) {
+                req.pause()
+                sink.once('drain', () => req.resume())
+              }
+            })
+            req.on('end', () => {
+              if (failed || sink === null) return
+              if (received === 0) {
+                fail(400, { ok: false, error: 'empty file' })
+                return
+              }
+              sink.end(() => {
+                if (failed) return
+                const target = mediaTargetPath({
+                  homeDir,
+                  slot,
+                  extension,
+                  digest: hash.digest('hex'),
+                })
+                try {
+                  fs.mkdirSync(path.dirname(target), { recursive: true })
+                  fs.rmSync(target, { force: true })
+                  fs.renameSync(tempPath, target)
+                } catch (error) {
+                  fail(500, { ok: false, error: `保存失败：${describe(error)}` })
+                  return
+                }
+                persist(
+                  { [slot]: { file: target, enabled: true } },
+                  `素材已更新：${slot} → ${path.basename(target)}（${Math.round(received / 1024)} KiB）`,
+                )
+              })
             })
           },
         }),

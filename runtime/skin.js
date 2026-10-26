@@ -934,6 +934,71 @@
   }
 
   /**
+   * 只摘掉视频那一层，**不动面板**。
+   *
+   * 和 `teardownBackdrop()` 的区别：那个是"背景彻底失败/卸载"，连圆钮面板一起拆；
+   * 这个是用户自己在面板里点了"关掉聊天背景"，面板必须留着 —— 否则他就没有入口再打开了。
+   */
+  function detachBackdropMedia() {
+    if (backdrop === null) return
+    try {
+      if (backdrop.video) {
+        try {
+          backdrop.video.pause()
+        } catch (error) {
+          /* 已经停了 */
+        }
+        backdrop.video.removeAttribute('src')
+      }
+      if (backdrop.cancel) global.clearTimeout(backdrop.cancel)
+      if (typeof backdrop.onVisibility === 'function') {
+        doc.removeEventListener('visibilitychange', backdrop.onVisibility)
+      }
+      if (backdrop.layer && backdrop.layer.parentNode) backdrop.layer.parentNode.removeChild(backdrop.layer)
+    } catch (error) {
+      api.state.failures.push('backdrop-detach')
+    }
+    backdrop = null
+    // 没有画面就不能再让表面半透明，否则界面会变成"没有背景、字还发灰"。
+    try {
+      doc.documentElement.removeAttribute('data-dsvs')
+    } catch (error) {
+      /* 尽力而为 */
+    }
+  }
+
+  /** 面板里点了"关掉/打开聊天背景"之后，把视频层同步上。 */
+  function setBackgroundLive(enabled) {
+    if (enabled === false) {
+      detachBackdropMedia()
+      return
+    }
+    if (backdrop !== null) {
+      reloadBackdropVideo()
+      return
+    }
+    // 旧快照里可能还写着 enabled:false，先扳正，否则 buildBackdrop 会再次提前返回。
+    if (isObject(liveCfg.background)) liveCfg.background.enabled = true
+    api.config = liveCfg
+    startBackdrop()
+  }
+
+  /** 换了素材 / 重新打开之后，让视频元素重新拉一次（素材路由是 no-store，URL 不变内容会变）。 */
+  function reloadBackdropVideo() {
+    if (backdrop === null || !backdrop.video) return
+    var bg = isObject(liveCfg.background) ? liveCfg.background : {}
+    var src = typeof bg.src === 'string' ? bg.src : ''
+    if (src === '') return
+    try {
+      backdrop.video.src = src
+      var played = backdrop.video.play()
+      if (played && typeof played.catch === 'function') played.catch(noop)
+    } catch (error) {
+      api.state.failures.push('backdrop-reload')
+    }
+  }
+
+  /**
    * 拉一次运行期配置（no-store 的 JSON 路由）。
    *
    * 注入行里带的是**宿主启动时的快照**，所以蒙版/表面不透明度这类"看着调"的值如果只认快照，
@@ -996,9 +1061,17 @@
   function buildBackdrop() {
     if (backdrop !== null) return
     var bg = isObject(liveCfg.background) ? liveCfg.background : {}
-    if (bg.enabled === false) return
     var src = typeof bg.src === 'string' ? bg.src : ''
-    if (src === '') return
+    if (bg.enabled === false || src === '') {
+      // 背景关掉了也**必须**把面板挂出来：否则用户点了"关掉聊天背景"就再也没有入口打开了。
+      // 这时候没有视频可量对比度，buildControls 会自己降级（传 null）。
+      try {
+        buildControls(null)
+      } catch (error) {
+        api.state.failures.push('controls-fatal')
+      }
+      return
+    }
     // 尊重系统的"减少动态效果"：常驻循环动画是这块设置主要管的东西。
     try {
       if (typeof global.matchMedia === 'function' && global.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -1449,6 +1522,10 @@
     head.appendChild(close)
     panel.appendChild(head)
 
+    // ── 素材：开关 / 更换 / 恢复默认 ──
+    // 这里是"我只想要背景、不想要开场动画"和"换成我自己的视频"的唯一入口。
+    var mediaSection = buildMediaSection(panel)
+
     var presets = el('div', 'dsvs-knobs-presets')
     var presetButtons = PRESETS.map(function (preset) {
       var button = el('div', 'dsvs-knobs-preset', preset.label)
@@ -1496,6 +1573,190 @@
     var status = el('span', 'dsvs-knobs-status', '')
     foot.appendChild(status)
     panel.appendChild(foot)
+
+    /**
+     * 造"素材"区：两个槽位各一行（开关 / 更换… / 默认）。
+     *
+     * 为什么要上传而不是让用户填路径：普通用户不知道"包内相对路径"是什么；
+     * 上传后宿主把文件落到 `$DSH_HOME/dsh-video-skin-media/`，配置里写绝对路径，
+     * 文件名带内容哈希（换素材时 URL 必变，浏览器不会拿旧视频的缓存）。
+     * @param {Element} parent 面板节点。
+     * @returns {{ render: (payload: unknown) => void } | null} 控制器（关掉控件时是 null）。
+     */
+    function buildMediaSection(parent) {
+      var mediaCfg = isObject(api.config.media) ? api.config.media : {}
+      var mediaRoute = typeof mediaCfg.route === 'string' ? mediaCfg.route : ''
+      if (mediaRoute === '') return null
+      var limitBytes = num(mediaCfg.limitBytes, 96 * 1024 * 1024, 1024, 1024 * 1024 * 1024)
+      var block = el('div', 'dsvs-media')
+      /** @type {Record<string, any>} */
+      var rows = {}
+      var SLOTS = [
+        { slot: 'boot', label: '开机动画' },
+        { slot: 'background', label: '聊天背景' },
+      ]
+
+      /** 用宿主回报的状态刷新两行。 */
+      var render = function (payload) {
+        for (var index = 0; index < SLOTS.length; index += 1) {
+          var spec = SLOTS[index]
+          var row = rows[spec.slot]
+          if (row === undefined) continue
+          var value = isObject(payload) && isObject(payload[spec.slot]) ? payload[spec.slot] : null
+          if (value === null) continue
+          row.enabled = value.enabled === true
+          row.toggle.textContent = row.enabled ? '开' : '关'
+          row.toggle.setAttribute('aria-checked', row.enabled ? 'true' : 'false')
+          row.row.setAttribute('data-off', row.enabled ? '0' : '1')
+          var name = typeof value.name === 'string' && value.name !== '' ? value.name : '默认素材'
+          row.note.textContent = (value.custom === true ? '自定义 · ' : '') + name
+        }
+        var bgOff = rows.background !== undefined && rows.background.enabled === false
+        parent.setAttribute('data-media-off', bgOff ? '1' : '0')
+      }
+
+      /** 拉一次真实状态（快照里没有"当前用的是哪个文件"）。 */
+      var refresh = function () {
+        var sent = global.fetch(mediaRoute, { method: 'GET', cache: 'no-store' })
+        if (!sent || typeof sent.then !== 'function') return
+        sent
+          .then(function (response) {
+            return response && response.ok ? response.json() : null
+          })
+          .then(function (payload) {
+            if (isObject(payload) && payload.ok === true) render(payload)
+          })
+          .then(undefined, noop)
+      }
+
+      for (var index = 0; index < SLOTS.length; index += 1) {
+        (function (spec) {
+          var row = el('div', 'dsvs-media-row')
+          row.setAttribute('data-slot', spec.slot)
+          var top = el('div', 'dsvs-media-top')
+          top.appendChild(el('span', 'dsvs-media-name', spec.label))
+          var note = el('span', 'dsvs-media-note', '')
+          top.appendChild(note)
+
+          var actions = el('div', 'dsvs-media-actions')
+          var toggle = el('div', 'dsvs-media-toggle', '开')
+          toggle.setAttribute('role', 'switch')
+          toggle.setAttribute('tabindex', '0')
+          toggle.setAttribute('aria-checked', 'true')
+          var pick = el('div', 'dsvs-media-btn', '更换…')
+          var reset = el('div', 'dsvs-media-btn dsvs-media-reset', '默认')
+          actions.appendChild(toggle)
+          actions.appendChild(pick)
+          actions.appendChild(reset)
+          top.appendChild(actions)
+          row.appendChild(top)
+          block.appendChild(row)
+
+          var file = doc.createElement('input')
+          file.type = 'file'
+          file.accept = 'video/mp4,video/webm,video/ogg'
+          file.className = 'dsvs-media-input'
+          // 挂在行里（虽然 CSS 隐藏），测试和 DOM 结构上它属于这个槽位。
+          row.appendChild(file)
+
+          var controller = {
+            row: row,
+            toggle: toggle,
+            note: note,
+            enabled: spec.slot === 'boot' ? api.config.boot.enabled === true : api.config.background.enabled === true,
+            busy: false,
+          }
+          rows[spec.slot] = controller
+
+          /** 忙的时候把整行标灰，别让人连点。 */
+          var setBusy = function (busy, message) {
+            controller.busy = busy
+            row.setAttribute('data-busy', busy ? '1' : '0')
+            if (typeof message === 'string') note.textContent = message
+          }
+
+          /** 收到宿主回包后统一刷新 + 让画面跟上。 */
+          var apply = function (payload) {
+            if (!isObject(payload) || payload.ok !== true) {
+              setBusy(false, isObject(payload) && typeof payload.error === 'string' ? payload.error : '操作失败')
+              return
+            }
+            render(payload)
+            if (spec.slot === 'background') setBackgroundLive(payload.background.enabled === true)
+            setBusy(false, spec.slot === 'boot' ? '已保存 · 重启 DSH 后生效' : '已保存 · 已生效')
+          }
+
+          /** 统一发请求：`init` 决定是上传、开关还是恢复默认。 */
+          var send = function (init, failText) {
+            setBusy(true, '处理中…')
+            var sent = global.fetch(mediaRoute + '?slot=' + spec.slot, init)
+            sent
+              .then(function (response) {
+                return response.json().catch(function () {
+                  return null
+                })
+              })
+              .then(apply)
+              .then(undefined, function () {
+                setBusy(false, failText)
+              })
+          }
+
+          toggle.addEventListener('click', function () {
+            if (controller.busy) return
+            var next = !controller.enabled
+            setBusy(true, next ? '正在打开…' : '正在关闭…')
+            send(
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: next }),
+              },
+              '保存失败（看一下宿主日志）',
+            )
+          })
+          toggle.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              toggle.click()
+            }
+          })
+          pick.addEventListener('click', function () {
+            if (!controller.busy) file.click()
+          })
+          file.addEventListener('change', function () {
+            var chosen = file.files && file.files.length > 0 ? file.files[0] : null
+            file.value = ''
+            if (chosen === null) return
+            if (chosen.size > limitBytes) {
+              note.textContent = '文件太大（上限 ' + Math.round(limitBytes / 1024 / 1024) + ' MiB）'
+              return
+            }
+            setBusy(true, '上传中… ' + Math.round(chosen.size / 1024) + ' KiB')
+            send(
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type':
+                    typeof chosen.type === 'string' && chosen.type !== '' ? chosen.type : 'application/octet-stream',
+                  'X-Dsh-Filename': encodeURIComponent(chosen.name || ''),
+                },
+                body: chosen,
+              },
+              '上传失败（看一下宿主日志）',
+            )
+          })
+          reset.addEventListener('click', function () {
+            if (controller.busy) return
+            send({ method: 'DELETE' }, '恢复失败（看一下宿主日志）')
+          })
+        })(SLOTS[index])
+      }
+
+      parent.appendChild(block)
+      refresh()
+      return { render: render, rows: rows }
+    }
 
     /** 把一组旋钮值同步到滑块位置与读数上。 */
     function syncInputs(values) {

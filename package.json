@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-skin",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DSH 视频皮肤：一段短片循环铺成整个界面的聊天背景（无声、可调透明度），另一段做有声的开机动画（片尾交叉溶解进界面、点击画面随时跳过）。零依赖。",
   "type": "module",
   "main": "index.js",

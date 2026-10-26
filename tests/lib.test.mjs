@@ -22,6 +22,7 @@ import {
 } from '../lib/route.js'
 import {
   DEFAULT_CONFIG,
+  writeMediaConfig,
   HOME_CONFIG_FILE,
   OVERRIDE_KEYS,
   PACKAGE_CONFIG_FILE,
@@ -32,6 +33,14 @@ import {
   resolveDshHome,
   writeOverride,
 } from '../lib/config.js'
+import {
+  MEDIA_LIMIT_BYTES,
+  describeMedia,
+  isMediaSlot,
+  mediaRoot,
+  mediaTargetPath,
+  pickExtension,
+} from '../lib/media.js'
 import {
   THEME_MARKER_FILE,
   decideThemeLink,
@@ -406,4 +415,90 @@ test('pickThemeDescriptor 只认 ui-theme 那一条', () => {
   )
   // 值是脏的也不该抛。
   assert.deepEqual(pickThemeDescriptor([{ ns: 'ui-theme', value: null }]), { preference: undefined, revision: undefined })
+})
+
+// ─────────────────── 素材替换（上传 / 开关 / 恢复默认） ───────────────────
+
+test('pickExtension：先看 MIME，再看扩展名，认不出来就拒绝', () => {
+  assert.equal(pickExtension('a.mp4', 'video/mp4'), '.mp4')
+  assert.equal(pickExtension('a.webm', 'video/webm'), '.webm')
+  assert.equal(pickExtension('a.ogv', 'video/ogg'), '.ogv')
+  // 带参数 / 大小写 / 空 MIME 都要能认
+  assert.equal(pickExtension('x', 'video/mp4; codecs=avc1'), '.mp4')
+  assert.equal(pickExtension('clip.MP4', ''), '.mp4')
+  assert.equal(pickExtension('clip.WebM', 'application/octet-stream'), '.webm')
+  // 认不出来 → undefined（宿主据此回 415，而不是存一个放不出来的文件）
+  assert.equal(pickExtension('a.mkv', 'video/x-matroska'), undefined)
+  assert.equal(pickExtension('a.exe', ''), undefined)
+  assert.equal(pickExtension('', ''), undefined)
+})
+
+test('mediaTargetPath：槽位前缀 + 内容哈希，换素材时 URL 必变', () => {
+  const home = tmpdir()
+  const a = mediaTargetPath({ homeDir: home, slot: 'background', extension: '.mp4', digest: 'abcdef0123456789' })
+  assert.equal(a.endsWith(`${path.sep}background-abcdef012345.mp4`), true, a)
+  assert.equal(path.dirname(a), mediaRoot(home))
+  // 不同的 digest 一定不同名（否则浏览器会拿旧视频的缓存）
+  const b = mediaTargetPath({ homeDir: home, slot: 'background', extension: '.mp4', digest: 'ffffffffffff0000' })
+  assert.notEqual(a, b)
+  // 脏 digest 也不能跑出目录
+  const c = mediaTargetPath({ homeDir: home, slot: 'boot', extension: '.webm', digest: '../../etc/passwd' })
+  assert.equal(path.dirname(c), mediaRoot(home))
+  assert.equal(isMediaSlot('boot') && isMediaSlot('background'), true)
+  assert.equal(isMediaSlot('logo') || isMediaSlot('../boot'), false)
+})
+
+test('describeMedia：认得出"用的是自定义素材"', () => {
+  const defaults = { boot: { file: 'assets/boot.mp4' }, background: { file: 'assets/background.mp4' } }
+  const state = describeMedia({
+    defaults,
+    boot: { enabled: false, file: 'assets/boot.mp4' },
+    background: { enabled: true, file: 'D:/videos/mine.mp4' },
+  })
+  assert.deepEqual(state.boot, { enabled: false, custom: false, name: '默认素材' })
+  assert.deepEqual(state.background, { enabled: true, custom: true, name: 'mine.mp4' })
+  // 没有 enabled 字段 = 开（和配置的语义一致）
+  assert.equal(describeMedia({ defaults, boot: {}, background: {} }).boot.enabled, true)
+})
+
+test('writeMediaConfig：只动 slot 下的 enabled/file，其余内容原样保留', () => {
+  const home = tmpdir()
+  const file = path.join(home, 'dsh-video-skin.json')
+  fs.writeFileSync(file, `${JSON.stringify({ background: { veil: 0.3 }, theme: { mode: 'ask' } }, null, 2)}\n`)
+  // 关掉开机动画
+  writeMediaConfig({ homeDir: home, patch: { boot: { enabled: false } } })
+  let raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(raw.boot.enabled, false)
+  assert.equal(raw.background.veil, 0.3, '无关的键必须留着')
+  assert.equal(raw.theme.mode, 'ask')
+  // 指定自定义素材
+  writeMediaConfig({ homeDir: home, patch: { background: { file: 'D:/v/mine.mp4' } } })
+  raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(raw.background.file, 'D:/v/mine.mp4')
+  assert.equal(raw.background.veil, 0.3)
+  // 恢复默认 = 删掉 file（enabled 归 true）
+  writeMediaConfig({ homeDir: home, patch: { background: { file: undefined, enabled: true } } })
+  raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(raw.background.file, undefined)
+  assert.equal(raw.background.veil, 0.3, '恢复默认不该清掉透明度')
+  // 大小上限是个明确的数（客户端/文档都引用它）
+  assert.equal(MEDIA_LIMIT_BYTES, 96 * 1024 * 1024)
+})
+
+test('配置里的绝对路径素材能解析出来（用户自己的视频）', () => {
+  const home = tmpdir()
+  const mine = path.join(home, 'mine.mp4')
+  fs.writeFileSync(mine, Buffer.from('fake video bytes'))
+  const { client, paths, warnings } = resolveConfig(
+    { background: { file: mine } },
+    {
+      packageRoot,
+      routes: { boot: '/b', background: '/g', config: '/c', override: '/o', theme: '/t', media: '/m' },
+      version: '0.0.0',
+    },
+  )
+  assert.deepEqual(warnings, [], JSON.stringify(warnings))
+  assert.equal(paths.background, mine)
+  assert.equal(client.background.custom, true)
+  assert.equal(client.background.src, '/g')
 })

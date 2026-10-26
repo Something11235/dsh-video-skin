@@ -851,3 +851,90 @@ test('parseColor 认 rgb / rgba / color(srgb)', () => {
   assert.equal(parse('transparent'), null)
   assert.equal(parse(''), null)
 })
+
+// ────────────────────── 素材区（换素材 / 关掉开机动画） ──────────────────────
+
+test('面板里的素材区：两个槽位、开关/更换/默认都在，状态从宿主读', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, {
+    ...knobConfig(),
+    media: { route: '/dsh-video-skin/media', limitBytes: 96 * 1024 * 1024 },
+  })
+  const calls = []
+  h.window.fetch = (url, init) => {
+    calls.push({ url: String(url), method: (init && init.method) || 'GET' })
+    if (String(url).startsWith('/dsh-video-skin/media')) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            boot: { enabled: true, custom: false, name: '默认素材' },
+            background: { enabled: true, custom: false, name: '默认素材' },
+          }),
+      })
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) })
+  }
+  await reachBackdrop(h)
+  await flush()
+
+
+  const rows = panel(h).querySelectorAll('.dsvs-media-row')
+  assert.equal(rows.length, 2, '开机动画 + 聊天背景两行')
+  assert.equal(rows[0].getAttribute('data-slot'), 'boot')
+  assert.equal(rows[1].getAttribute('data-slot'), 'background')
+  for (const row of rows) {
+    assert.ok(row.querySelector('.dsvs-media-toggle') !== null, '每一行都有开关')
+    assert.equal(row.querySelectorAll('.dsvs-media-btn').length, 2, '更换 + 默认')
+    assert.ok(row.querySelector('.dsvs-media-input') !== null, '带一个隐藏的文件选择框')
+  }
+  assert.ok(
+    calls.some((call) => call.url === '/dsh-video-skin/media' && call.method === 'GET'),
+    '打开面板时应该向宿主读一次真实状态',
+  )
+})
+
+test('点开关会写回宿主，并且关掉聊天背景时只摘视频层、面板留着', async () => {
+  const h = createHarness()
+  h.run(RUNTIME, {
+    ...knobConfig(),
+    media: { route: '/dsh-video-skin/media', limitBytes: 96 * 1024 * 1024 },
+  })
+  const calls = []
+  let state = {
+    ok: true,
+    boot: { enabled: true, custom: false, name: '默认素材' },
+    background: { enabled: true, custom: false, name: '默认素材' },
+  }
+  h.window.fetch = (url, init) => {
+    const method = (init && init.method) || 'GET'
+    calls.push({ url: String(url), method, body: init && init.body })
+    if (String(url).startsWith('/dsh-video-skin/media')) {
+      if (method === 'POST') {
+        // 宿主回包：开关被翻过来了
+        state = { ...state, background: { ...state.background, enabled: false } }
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(state) })
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) })
+  }
+  await reachBackdrop(h)
+  await flush()
+  const bgRow = panel(h).querySelectorAll('.dsvs-media-row')[1]
+  const toggle = bgRow.querySelector('.dsvs-media-toggle')
+  assert.equal(toggle.getAttribute('aria-checked'), 'true')
+
+  toggle.dispatchEvent({ type: 'click' })
+  await flush()
+  await flush()
+
+  const posted = calls.find((call) => call.method === 'POST' && call.url.includes('slot=background'))
+  assert.ok(posted !== undefined, '应该 POST 到素材路由')
+  assert.equal(JSON.parse(posted.body).enabled, false)
+  assert.equal(toggle.getAttribute('aria-checked'), 'false', '开关要跟着宿主回报的状态走')
+  assert.equal(h.body.querySelector('#dsvs-knobs-pill') !== null, true, '面板入口必须留着')
+  assert.equal(h.body.querySelector('#dsvs-knobs') !== null, true, '面板本身必须留着，否则用户没有入口再打开')
+  assert.equal(h.body.querySelector('#dsvs-backdrop'), null, '视频层应该被摘掉')
+})

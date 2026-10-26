@@ -15,7 +15,16 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE, THEME_ROUTE, VERSION, apply } from '../index.js'
+import {
+  BACKGROUND_ROUTE,
+  BOOT_ROUTE,
+  CONFIG_ROUTE,
+  MEDIA_ROUTE,
+  OVERRIDE_ROUTE,
+  THEME_ROUTE,
+  VERSION,
+  apply,
+} from '../index.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const packageRoot = path.resolve(here, '..')
@@ -106,13 +115,13 @@ function boot(options = {}) {
   }
 }
 
-test('apply() 不抛异常，并且注册了配置/开机/背景/滑块写回/主题联动五条 exact 路由', () => {
+test('apply() 不抛异常，并且注册了配置/开机/背景/滑块写回/主题联动/素材六条 exact 路由', () => {
   const { ctx } = boot()
   // injectListeners 记的是 index-inject 的订阅，永远只该有一条。
   assert.equal(ctx.injectListeners.length, 1, '注入订阅必须只有一个')
   assert.deepEqual(
     [...ctx.routes.keys()].sort(),
-    [BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, OVERRIDE_ROUTE, THEME_ROUTE].sort(),
+    [BACKGROUND_ROUTE, BOOT_ROUTE, CONFIG_ROUTE, MEDIA_ROUTE, OVERRIDE_ROUTE, THEME_ROUTE].sort(),
   )
 })
 
@@ -408,6 +417,89 @@ test('滑块写回：越界值被夹取，非法输入被拒，超大 body 回 4
     assert.deepEqual(Object.keys(onDisk.background).sort(), ['surface', 'veil'], 'bounce 不该被写进去')
     assert.equal(onDisk.background.surface, 1)
     assert.equal(onDisk.background.veil, 0)
+  } finally {
+    server.close()
+  }
+})
+
+test('素材路由：GET 状态 / 开关 / 上传 / 415 / 恢复默认（用户要的"自己换素材"）', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-media-'))
+  // 用户配置里预先放一条无关设置：素材写回必须保留它。
+  fs.writeFileSync(
+    path.join(home, 'dsh-video-skin.json'),
+    JSON.stringify({ background: { veil: 0.3 }, theme: { mode: 'ask' } }),
+  )
+  const { ctx } = boot({ home })
+  const { server, base } = await serve(ctx.routes)
+  try {
+    // ① 读状态
+    let response = await fetch(`${base}${MEDIA_ROUTE}`)
+    let body = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(body.ok, true)
+    assert.equal(body.boot.enabled, true)
+    assert.equal(body.boot.custom, false)
+    assert.equal(body.background.custom, false)
+
+    // ② 关掉开机动画（"我只想要背景、不想要开场动画"）
+    response = await fetch(`${base}${MEDIA_ROUTE}?slot=boot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+    body = await response.json()
+    assert.equal(body.ok, true, JSON.stringify(body))
+    assert.equal(body.boot.enabled, false)
+    const onDisk = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+    assert.equal(onDisk.boot.enabled, false)
+    assert.equal(onDisk.background.veil, 0.3, '无关设置必须原样保留')
+
+    // ③ 上传自己的背景
+    const bytes = Buffer.from('fake-mp4-bytes-'.repeat(100))
+    response = await fetch(`${base}${MEDIA_ROUTE}?slot=background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'video/mp4', 'X-Dsh-Filename': encodeURIComponent('我的背景.mp4') },
+      body: bytes,
+    })
+    body = await response.json()
+    assert.equal(body.ok, true, JSON.stringify(body))
+    assert.equal(body.background.custom, true)
+    assert.match(body.background.name, /^background-[0-9a-f]{12}\.mp4$/u)
+    const saved = path.join(home, 'dsh-video-skin-media', body.background.name)
+    assert.deepEqual(fs.readFileSync(saved), bytes, '落盘内容必须和上传的一模一样')
+    // 素材路由立刻改吐这个文件
+    const served = await fetch(`${base}${BACKGROUND_ROUTE}`)
+    assert.equal(served.status, 200)
+    assert.equal(served.headers.get('content-type'), 'video/mp4')
+    assert.deepEqual(Buffer.from(await served.arrayBuffer()), bytes)
+
+    // ④ 不支持的类型 → 415，且不该往素材目录里写东西
+    const before = fs.readdirSync(path.join(home, 'dsh-video-skin-media')).length
+    response = await fetch(`${base}${MEDIA_ROUTE}?slot=background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'video/x-matroska', 'X-Dsh-Filename': 'a.mkv' },
+      body: Buffer.from('whatever'),
+    })
+    assert.equal(response.status, 415)
+    assert.equal(fs.readdirSync(path.join(home, 'dsh-video-skin-media')).length, before, '被拒的上传不能留垃圾')
+
+    // ⑤ 空文件 → 400
+    response = await fetch(`${base}${MEDIA_ROUTE}?slot=boot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'video/mp4', 'X-Dsh-Filename': 'a.mp4' },
+      body: Buffer.alloc(0),
+    })
+    assert.equal(response.status, 400)
+
+    // ⑥ 恢复默认：配置里的 file 被删掉，回到包内素材
+    response = await fetch(`${base}${MEDIA_ROUTE}?slot=background`, { method: 'DELETE' })
+    body = await response.json()
+    assert.equal(body.ok, true)
+    assert.equal(body.background.custom, false)
+    assert.equal(body.background.enabled, true)
+    const servedDefault = await fetch(`${base}${BACKGROUND_ROUTE}`)
+    assert.equal(servedDefault.status, 200)
+    assert.ok((await servedDefault.arrayBuffer()).byteLength > 1024 * 1024, '默认背景是包里那个大文件')
   } finally {
     server.close()
   }

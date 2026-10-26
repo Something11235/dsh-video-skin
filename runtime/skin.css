@@ -365,6 +365,8 @@ body:not([data-ds-dark-theme]) #dsvs-knobs-pill {
 }
 
 #dsvs-knobs {
+  max-height: min(78vh, 640px);
+  overflow-y: auto;
   position: fixed;
   right: 16px;
   bottom: 58px;
@@ -677,4 +679,117 @@ body:not([data-ds-dark-theme]) .dsvs-theme-primary {
   #dsvs-theme-notice {
     animation: none;
   }
+}
+
+/* ─────────────── ⑤ 素材区（面板里换/关掉开机动画与聊天背景） ───────────────
+ *
+ * 放在面板顶部：这两行决定"有没有东西可调"，比滑块更先被看到。
+ * 面板里内容变多了，所以这里也给面板加了最大高度 + 滚动（见文件开头的 #dsvs-knobs 规则补充）。 */
+.dsvs-media {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-media {
+  border-bottom-color: rgba(20, 30, 45, 0.1);
+}
+
+.dsvs-media-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dsvs-media-row[data-busy="1"] {
+  opacity: 0.6;
+}
+
+.dsvs-media-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dsvs-media-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.dsvs-media-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  opacity: 0.66;
+}
+
+.dsvs-media-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dsvs-media-toggle {
+  cursor: pointer;
+  min-width: 34px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 11px;
+  background: rgba(96, 165, 250, 0.28);
+  border: 1px solid rgba(147, 197, 253, 0.5);
+  color: #dbeafe;
+}
+
+.dsvs-media-toggle[aria-checked="false"] {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: inherit;
+  opacity: 0.75;
+}
+
+.dsvs-media-btn {
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dsvs-media-btn:hover,
+.dsvs-media-toggle:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-media-btn {
+  background: rgba(20, 30, 45, 0.05);
+  border-color: rgba(20, 30, 45, 0.1);
+}
+
+body:not([data-ds-dark-theme]) .dsvs-media-toggle {
+  background: rgba(27, 79, 138, 0.14);
+  border-color: rgba(27, 79, 138, 0.4);
+  color: #1b4f8a;
+}
+
+/* 文件选择框只是为了点按钮时能弹系统对话框，不参与布局。 */
+.dsvs-media-input {
+  display: none;
+}
+
+/* 背景关掉时，上面那三行滑块没有意义 —— 灰掉，别让人误以为能调。 */
+#dsvs-knobs[data-media-off="1"] .dsvs-knobs-row,
+#dsvs-knobs[data-media-off="1"] .dsvs-knobs-presets {
+  opacity: 0.4;
+  pointer-events: none;
 }

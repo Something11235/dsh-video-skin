@@ -48,6 +48,12 @@ then fading into the app, and **skippable with a click**.
   you click. `auto` switches by itself, `off` disables it. The write goes through the kernel's settings
   service (`ctx.settings.update('ui-theme', …)`, never by editing the profile YAML) — **never during
   activation**, which is what broke desktop startup in 0.1.3 (see §"Startup safety").
+- **Your media, your rules.** The panel has one row per asset: turn the boot animation off and keep
+  the background (or the other way round), or hit 更换… to upload your own mp4/webm/ogv (≤ 96 MiB).
+  Uploads land in `$DSH_HOME/dsh-video-skin-media/` with a content-hash filename, so a replaced file
+  can never be served from cache; 默认 restores the bundled asset. Background changes apply live,
+  boot changes after a DSH restart (the boot overlay comes from a startup snapshot). Config accepts
+  either a package-relative or an absolute `file`. Verified by `scripts/verify-media.mjs` (15 assertions).
 - **Startup safety.** 0.1.3 called `settings.update()` while the plugin was still activating; that write
   rewrites the profile patch document, and the desktop welcome window aborts startup if its first RPC
   (`settings.describe`) is not 2xx, without retrying (`app.asar/lib/main.js:8903/13018`). 0.1.4 touches

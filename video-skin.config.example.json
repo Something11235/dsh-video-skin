@@ -16,6 +16,7 @@
     "volume": 1,
     "soundLabel": "开启声音"
   },
+  "_mediaNote": "boot.file / background.file 可以是包内相对路径，也可以是绝对路径（指向你自己的视频）；enabled:false 关掉对应素材。",
   "theme": {
     "mode": "ask"
   },
