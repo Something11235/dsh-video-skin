@@ -355,6 +355,11 @@ alpha 都必须等于 1），单元测试里则是"`--dsvs-layer1/2/3` 不该由
 —— 无关的行（`agent-default-model`、`ui-theme`、`dsh-ops-*` 之类）会被**静默丢掉**。
 所以：**点之前先把 profile 目录整个复制一份**；救回来之后对照备份把丢掉的配置补回去。
 
+> **开发这个插件的人注意**：profile 里用 `link:` 指向本仓库时，**不要**在插件界面点"安装/更新" ——
+> 插件管理器会用 pnpm 把 junction 换成 registry 实体包，中途中断会顺着链接删掉本仓库的 `.git`
+> （2026-10 实际发生过两次）。用 `npm run repo:verify` / `npm run repo:backup` 自检与备份，
+> 细节见 [PUBLISHING.md](PUBLISHING.md)。
+
 更稳的做法是只用 CLI：
 
 ```powershell

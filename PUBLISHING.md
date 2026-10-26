@@ -145,3 +145,40 @@ npm 通道的 tarball 内容由 `package.json` 的 `files` 白名单决定，用
 2. **国内网络直连 github.com 可能很慢或失败。** 装不上时：给 git/pnpm 配代理，或让用户
    fork 到你自己的账号再装 fork 的地址（`github:<对方的账号>/dsh-video-skin#main`）。
    插件管理器里那个"安装源"下拉是给 **npm 包**用的，对 `github:` 规格不生效。
+
+## 别让插件管理器删掉你的 `.git`（2026-10 两次实测事故）
+
+这个仓库的 `.git` 被清空过两次，形态完全一样：只剩 `objects/`、`refs/` 和一个 `ORIG_HEAD`，
+`HEAD` / `config` / `index` 全没了 —— `git` 直接报 `not a git repository`。
+
+**原因不是同步盘，也不是清理工具**，而是：插件在 profile 里以 **junction**（`link:`）存在时，
+**在插件界面点了"安装/更新"**。DSH 插件管理器会用 pnpm 把 junction 替换成一个 registry 实体包，
+pnpm 的流程是「解压到 `node_modules/<name>_tmp_<pid>_<n>` → 改名覆盖目标目录」。目标是个 junction
+时，改名/删除会**顺着链接落到真实目录**；中途碰到文件占用就 `ERR_PNPM_EPERM` 中断，
+留下半删状态（`objects/` 和 `refs/` 是文件最多、最容易被枚举到一半的目录，所以正好剩下它们）。
+
+三条预防规矩：
+
+1. **link 到 profile 的时候，绝不在插件界面点"安装/更新"**。要换版本就先把 link 摘掉，
+   或者干脆用独立的开发 profile（本机是 `plugindev`）。
+2. 开发目录的改动要生效，用 `node scripts/profile-link.mjs install --profile desktop` 重新 link
+   —— 它是直接建 junction，不走 pnpm。
+3. 给仓库配一个**仓库外面**的 bare 镜像，定期备份：
+
+```powershell
+npm run repo:verify      # 自检 .git 骨架（健康时退出码 0）
+npm run repo:backup      # 克隆成镜像：%LOCALAPPDATA%\dsh-video-skin\mirror.git
+```
+
+真出事了：
+
+```powershell
+node scripts/verify-repo.mjs --repair    # refs 还在 → 就地补回 HEAD/config/index
+node scripts/verify-repo.mjs --restore   # .git 都没了 → 从镜像恢复并对齐工作区
+```
+
+两条路径都在临时副本上实测过（缺 HEAD/config/index、以及整个 `.git` 消失）。
+
+> 顺带一个副作用值得记住：junction 被替换成 registry 包之后，**profile 里跑的就是 npm 上那个版本，
+> 你在开发目录的改动完全不会生效**，而且可能是带已知 bug 的旧版本。发现这种情况先用
+> `Get-Item <profile>\node_modules\dsh-video-skin` 看 `ReparsePoint` 属性，再重新 link。

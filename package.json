@@ -55,7 +55,9 @@
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "check": "node scripts/check-syntax.mjs",
-    "verify": "node scripts/verify-all.mjs"
+    "verify": "node scripts/verify-all.mjs",
+    "repo:verify": "node scripts/verify-repo.mjs",
+    "repo:backup": "node scripts/verify-repo.mjs --backup"
   },
   "dsh": {
     "bundle": {
