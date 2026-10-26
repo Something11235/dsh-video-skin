@@ -34,10 +34,11 @@ import {
 } from '../lib/config.js'
 import {
   THEME_MARKER_FILE,
-  decideAutoDark,
+  decideThemeLink,
   isThemePreference,
   pickThemeDescriptor,
   readThemeMarker,
+  resolveThemeMode,
   writeThemeMarker,
 } from '../lib/theme.js'
 import { BOOTSTRAP_GLOBAL, buildInjectionRows } from '../lib/injections.js'
@@ -332,27 +333,52 @@ test('注入行：配置里的恶意字符串不会闭合 script 元素', () => 
 
 // ─────────────────── 主题联动（一次性自动切深色） ───────────────────
 
-test('decideAutoDark：四条护栏各自生效', () => {
-  // 关掉就绝不动。
-  assert.equal(decideAutoDark({ autoDark: false, marker: null, preference: 'light' }).action, 'skip')
-  // 已经评估过 → 不动（这是"用户后来自己切回浅色"的唯一保护）。
-  assert.equal(decideAutoDark({ autoDark: true, marker: { evaluated: true }, preference: 'light' }).action, 'skip')
+test('resolveThemeMode：默认是 ask（只问不改），兼容旧的 autoDark 布尔', () => {
+  assert.equal(resolveThemeMode(undefined), 'ask')
+  assert.equal(resolveThemeMode({}), 'ask')
+  assert.equal(resolveThemeMode({ mode: 'auto' }), 'auto')
+  assert.equal(resolveThemeMode({ mode: 'off' }), 'off')
+  assert.equal(resolveThemeMode({ mode: 'ask' }), 'ask')
+  assert.equal(resolveThemeMode({ mode: 'nonsense' }), 'ask', '脏值回默认')
+  // 0.1.3 的旧键
+  assert.equal(resolveThemeMode({ autoDark: false }), 'off')
+  assert.equal(resolveThemeMode({ autoDark: true }), 'auto')
+  // mode 优先于旧键
+  assert.equal(resolveThemeMode({ mode: 'ask', autoDark: true }), 'ask')
+})
+
+test('decideThemeLink：模式 + 标记 + 偏好三者的所有关键组合', () => {
+  // off 什么都不做。
+  assert.equal(decideThemeLink({ mode: 'off', marker: null, preference: 'light' }).action, 'skip')
+  // 已经评估过 → 永远不再打扰（用户自己切回浅色的保护）。
+  assert.equal(decideThemeLink({ mode: 'ask', marker: { evaluated: true }, preference: 'light' }).action, 'skip')
+  assert.equal(decideThemeLink({ mode: 'auto', marker: { evaluated: true }, preference: 'light' }).action, 'skip')
   // 读不到偏好 → 宁可不做。
-  assert.equal(decideAutoDark({ autoDark: true, marker: null, preference: undefined }).action, 'skip')
-  assert.equal(decideAutoDark({ autoDark: true, marker: null, preference: 'purple' }).action, 'skip')
-  // 已经是深色 → 只落标记，不改。
-  assert.deepEqual(decideAutoDark({ autoDark: true, marker: null, preference: 'dark' }), {
+  assert.equal(decideThemeLink({ mode: 'auto', marker: null, preference: undefined }).action, 'skip')
+  assert.equal(decideThemeLink({ mode: 'auto', marker: null, preference: 'purple' }).action, 'skip')
+  // 已经是深色 → 只落标记，不改也不问。
+  assert.deepEqual(decideThemeLink({ mode: 'ask', marker: null, preference: 'dark' }), {
     action: 'mark',
     reason: 'already-dark',
   })
-  // 浅色 / 跟随系统 → 切，并记下原值。
+  assert.deepEqual(decideThemeLink({ mode: 'auto', marker: null, preference: 'dark' }), {
+    action: 'mark',
+    reason: 'already-dark',
+  })
+  // 浅色 / 跟随系统：ask 只问，auto 才切。
   for (const previous of ['light', 'system']) {
-    const decision = decideAutoDark({ autoDark: true, marker: null, preference: previous })
-    assert.equal(decision.action, 'switch')
-    assert.equal(decision.previous, previous)
+    assert.deepEqual(decideThemeLink({ mode: 'ask', marker: null, preference: previous }), {
+      action: 'ask',
+      previous,
+      reason: 'light-theme',
+    })
+    assert.deepEqual(decideThemeLink({ mode: 'auto', marker: null, preference: previous }), {
+      action: 'switch',
+      previous,
+      reason: 'light-theme',
+    })
   }
 })
-
 test('主题标记文件：写进去读得出来，没有就是 null', () => {
   const home = tmpdir()
   assert.equal(readThemeMarker(home), null, '没有文件时返回 null')

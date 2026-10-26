@@ -644,14 +644,16 @@ body:not([data-ds-dark-theme]) #dsvs-theme-notice {
   background: rgba(255, 255, 255, 0.15);
 }
 
-.dsvs-theme-keep {
+.dsvs-theme-keep,
+.dsvs-theme-primary {
   font-weight: 600;
   color: #cfe4ff;
   border-color: rgba(158, 203, 255, 0.4);
   background: rgba(64, 110, 170, 0.28);
 }
 
-.dsvs-theme-keep:hover {
+.dsvs-theme-keep:hover,
+.dsvs-theme-primary:hover {
   background: rgba(64, 110, 170, 0.42);
 }
 
@@ -664,7 +666,8 @@ body:not([data-ds-dark-theme]) .dsvs-theme-action:hover {
   background: rgba(20, 30, 45, 0.1);
 }
 
-body:not([data-ds-dark-theme]) .dsvs-theme-keep {
+body:not([data-ds-dark-theme]) .dsvs-theme-keep,
+body:not([data-ds-dark-theme]) .dsvs-theme-primary {
   color: #1b4f8a;
   border-color: rgba(27, 79, 138, 0.35);
   background: rgba(27, 79, 138, 0.1);

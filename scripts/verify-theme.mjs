@@ -7,11 +7,13 @@
  *        - id: ui-theme
  *          name: "@deepseek-ai/dsh-client-ui-theme"
  *          config: { preference: light }
- *   3. 删掉 `.verify-home/dsh-video-skin.theme.json`
+ *   3. 删掉 `.verify-home/dsh-video-skin.theme.json`（保证是"没问过"的状态）
  *   4. 启动实例，再跑本脚本
  *
- * 断言的是整条链：宿主自动切深色 → 客户端弹一次性提示 → 点「恢复浅色」→
- * 主题真变回浅色 + 标记记成 reverted（以后不再自动切）。
+ * 断言的是整条链（默认 mode=ask，只问不改）：
+ *   宿主路由报告 ask:true → 客户端弹"要切到深色吗" → 点「切到深色」→
+ *   内核 settings 真的把 ui-theme.preference 写成 dark → 页面变深 → 标记落盘 →
+ *   再 POST revert → 变回浅色 + 标记改成已撤销。
  *
  * 用法：node scripts/verify-theme.mjs --url "<带令牌地址>" --dsh-home <目录> [--shot 图.png]
  */
@@ -45,6 +47,8 @@ if (browser === undefined) {
   process.exit(2)
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const base = args.url.split('/?')[0]
+const themeUrl = `${base}/dsh-video-skin/theme`
 
 class Cdp {
   constructor(url) {
@@ -116,10 +120,8 @@ function readMarker() {
   }
 }
 
-const before = readMarker()
-check(before !== null && before.switched === true, '宿主已自动切到深色（标记文件写着 switched）', before)
-check(before !== null && before.previous === 'light', '标记里记下了原来的偏好（light）', before)
-check(before !== null && before.notified !== true, '还没提示过（notified=false）', before)
+const beforeMarker = readMarker()
+check(beforeMarker === null, '开跑前没有标记文件（"没问过"的干净状态）', beforeMarker)
 
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-theme-chrome-'))
 const child = spawn(
@@ -168,10 +170,17 @@ try {
   // 跳过开机动画
   await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 800, y: 450, button: 'left', clickCount: 1 })
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 800, y: 450, button: 'left', clickCount: 1 })
-  await sleep(2000)
+  // 客户端刻意延迟 1.5s 才去问宿主（远离启动握手），所以这里等久一点。
+  await sleep(3200)
 
-  const darkNow = await cdp.evaluate(`document.body.hasAttribute('data-ds-dark-theme')`)
-  check(darkNow === true, '页面现在确实是深色（body[data-ds-dark-theme]）', { darkNow })
+  const hostState = await (await fetch(themeUrl)).json()
+  check(hostState.ok === true && hostState.mode === 'ask', '宿主路由报告 mode=ask（默认只问不改）', hostState)
+  check(hostState.ask === true, '宿主告诉客户端"该问一句了"', hostState)
+  check(hostState.askPrevious === 'light', '并且说清楚原来是浅色', hostState)
+  check(hostState.evaluated === false, '还没落标记', hostState)
+
+  const lightNow = await cdp.evaluate(`!document.body.hasAttribute('data-ds-dark-theme')`)
+  check(lightNow === true, '页面此刻仍是浅色（**没有被偷偷改掉**）', { lightNow })
 
   const notice = await cdp.evaluate(`(() => {
     const box = document.querySelector('#dsvs-theme-notice')
@@ -179,10 +188,10 @@ try {
     const buttons = Array.from(box.querySelectorAll('.dsvs-theme-action')).map((node) => node.textContent)
     return { found: true, text: (box.textContent || '').replace(/\\s+/g, ' ').trim(), buttons }
   })()`)
-  check(notice.found === true, '出现了主题联动的一次性提示', notice)
+  check(notice.found === true, '弹出了"要切到深色吗"的提示', notice)
   check(
-    Array.isArray(notice.buttons) && notice.buttons.length === 2 && /恢复/.test(notice.buttons[0]),
-    '提示里有两个按钮，第一个是「恢复浅色」',
+    Array.isArray(notice.buttons) && notice.buttons.some((label) => /切到深色/.test(label)),
+    '提示里有「切到深色」按钮',
     notice,
   )
 
@@ -192,29 +201,45 @@ try {
     console.log(`shot -> ${args.shot}`)
   }
 
-  // 点「恢复浅色」
+  // 点「切到深色」
   const clicked = await cdp.evaluate(`(() => {
-    const button = document.querySelector('.dsvs-theme-revert')
+    const button = document.querySelector('.dsvs-theme-primary')
     if (button === null) return false
     button.click()
     return true
   })()`)
-  check(clicked === true, '点到了「恢复浅色」', { clicked })
-  await sleep(2500)
+  check(clicked === true, '点到了「切到深色」', { clicked })
+  await sleep(3500)
 
-  const after = await cdp.evaluate(`(() => ({
+  const afterSwitch = await cdp.evaluate(`(() => ({
     dark: document.body.hasAttribute('data-ds-dark-theme'),
     noticeGone: document.querySelector('#dsvs-theme-notice') === null,
   }))()`)
-  check(after.noticeGone === true, '提示点了就消失', after)
-  check(after.dark === false, '主题真的变回浅色（内核 settings 生效）', after)
+  check(afterSwitch.noticeGone === true, '提示点了就消失', afterSwitch)
+  check(afterSwitch.dark === true, '内核 settings 生效：页面真的变深色了', afterSwitch)
 
   const markerAfter = readMarker()
-  check(markerAfter !== null && markerAfter.switched === false, '标记改成"已撤销"，以后不再自动切', markerAfter)
-  check(markerAfter !== null && markerAfter.notified === true, '标记记成"提示过了"', markerAfter)
+  check(markerAfter !== null && markerAfter.switched === true, '标记记成"已切换"', markerAfter)
+  check(markerAfter !== null && markerAfter.previous === 'light', '标记里记下了原偏好 light', markerAfter)
 
-  const again = await (await fetch(`${args.url.split('/?')[0]}/dsh-video-skin/theme`)).json()
-  check(again.ok === true && again.preference === 'light', '宿主路由报告当前偏好已回到 light', again)
+  const stateAfter = await (await fetch(themeUrl)).json()
+  check(stateAfter.preference === 'dark', '宿主路由报告当前偏好 dark', stateAfter)
+
+  // 撤销：直接打路由（相当于用户点「恢复浅色」）
+  const revert = await (
+    await fetch(themeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'revert' }),
+    })
+  ).json()
+  check(revert.ok === true && revert.preference === 'light', '「恢复浅色」把偏好写回了 light', revert)
+  await sleep(1800)
+  const afterRevert = await cdp.evaluate(`!document.body.hasAttribute('data-ds-dark-theme')`)
+  check(afterRevert === true, '页面跟着变回浅色', { afterRevert })
+
+  const markerFinal = readMarker()
+  check(markerFinal !== null && markerFinal.switched === false, '标记改成已撤销（以后不再问/不再切）', markerFinal)
 } catch (error) {
   check(false, '运行期异常', error instanceof Error ? error.message : String(error))
 } finally {

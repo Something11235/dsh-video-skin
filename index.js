@@ -27,8 +27,7 @@ import { loadConfig, resolveDshHome, clearOverride, writeOverride, OVERRIDE_KEYS
 import { buildInjectionRows } from './lib/injections.js'
 import { contentTypeFor, isPlainObject, parseRange } from './lib/route.js'
 import {
-  THEME_MARKER_FILE,
-  decideAutoDark,
+  decideThemeLink,
   isThemePreference,
   pickThemeDescriptor,
   readThemeMarker,
@@ -55,7 +54,7 @@ export const OVERRIDE_ROUTE = `${ROUTE_PREFIX}/override`
 export const THEME_ROUTE = `${ROUTE_PREFIX}/theme`
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.1.3'
+export const VERSION = '0.1.4'
 
 /** 路由表：同时是配置解析的输入。 */
 const ROUTES = Object.freeze({
@@ -209,19 +208,20 @@ export function apply(ctx) {
   }
 
   /**
-   * settings 服务（内核的配置表单服务）；晚到也没关系，路由会自己判断。
-   * @type {null | { describe: (options?: { redactSecrets?: boolean }) => unknown, update: (ns: string, patch: object) => Promise<void>, writable?: boolean }}
+   * **按需**取 settings 服务 —— 用 `ctx.get()` 而不是 `ctx.inject()`。
+   *
+   * `ctx.get()` 只读：服务没就绪就返回 undefined，**不参与激活顺序**。
+   * 这是 0.1.4 的关键修复：0.1.3 用 `ctx.inject(['settings'])` 在插件激活期就要服务、
+   * 还在激活期里调了 `update()`（= 改写 profile patch 文档 + 同步 describe），
+   * 撞上桌面版「欢迎窗口第一个 RPC 失败就判启动失败、不重试」的握手，用户应用起不来。
+   * 现在启动期**完全不碰** settings：只有页面加载完、主动 GET /theme 时才用一次。
+   * @returns {null | { describe: (options?: { redactSecrets?: boolean }) => unknown, update: (ns: string, patch: object) => Promise<void>, writable?: boolean }} 服务或 null。
    */
-  let settingsService = null
-
-  /**
-   * 读主题在 settings 里的当前值。
-   * @returns {{ preference?: unknown, revision?: number } | null} 主题描述符；服务没就绪时 null。
-   */
-  const readThemeState = () => {
-    if (settingsService === null || typeof settingsService.describe !== 'function') return null
+  const settingsNow = () => {
     try {
-      return pickThemeDescriptor(settingsService.describe({ redactSecrets: true }))
+      if (typeof ctx.get !== 'function') return null
+      const service = ctx.get('settings')
+      return service !== undefined && service !== null ? service : null
     } catch {
       return null
     }
@@ -229,56 +229,22 @@ export function apply(ctx) {
 
   /**
    * 把主题偏好写回去（**只走内核 settings 服务**，绝不手改用户的 profile YAML）。
+   *
+   * 只可能在"页面加载后主动来问"这条路径上被调用 —— 启动期不会走到这里。
    * @param {'light' | 'dark' | 'system'} preference 目标偏好。
    * @returns {Promise<boolean>} 是否写成功。
    */
   const writeThemePreference = async (preference) => {
-    if (settingsService === null || typeof settingsService.update !== 'function') return false
+    const service = settingsNow()
+    if (service === null || typeof service.update !== 'function') return false
     if (!isThemePreference(preference)) return false
     try {
-      await settingsService.update('ui-theme', { preference })
+      await service.update('ui-theme', { preference })
       return true
     } catch (error) {
       warn(`切换主题失败（不影响背景本身）：${describe(error)}`)
       return false
     }
-  }
-
-  /**
-   * 首次启动的"浅色→深色"一次性联动。
-   *
-   * `theme.autoDark` 关掉就不做；已经评估过（标记文件存在）也绝不再做 ——
-   * 那是"用户自己切回浅色"的唯一保护。写标记放在切换之前/之后都行，
-   * 但必须在**任何**分支上落盘，否则下次启动又会重新评估。
-   * @returns {Promise<void>}
-   */
-  const applyThemeLinkOnce = async () => {
-    let autoDark = true
-    try {
-      autoDark = current().client.theme?.autoDark !== false
-    } catch {
-      /* 配置坏了就按默认（开）处理 */
-    }
-    const marker = readThemeMarker(homeDir)
-    const themeState = readThemeState()
-    const decision = decideAutoDark({ autoDark, marker, preference: themeState?.preference })
-    if (decision.action === 'skip') return
-    if (decision.action === 'mark') {
-      // 已经是深色：只落标记，避免用户以后切浅色时被我们再改回去。
-      writeThemeMarker(homeDir, { evaluated: true, switched: false, at: new Date().toISOString() })
-      return
-    }
-    const previous = decision.previous
-    const switched = await writeThemePreference('dark')
-    if (!switched) return
-    writeThemeMarker(homeDir, {
-      evaluated: true,
-      switched: true,
-      previous: previous,
-      notified: false,
-      at: new Date().toISOString(),
-    })
-    info(`检测到浅色主题（${previous}），已一次性切到深色，让聊天背景看得清；可在提示里恢复`)
   }
 
   // ── ① 注入行：必须**同步**注册，且不能等到任何服务就绪 ──
@@ -299,21 +265,7 @@ export function apply(ctx) {
     }
   })
 
-  // ── ② 主题联动：settings 服务就绪后做一次"浅色→深色"（只做一次，可撤销） ──
-  ctx.inject(['settings'], (child) => {
-    settingsService = child.settings ?? null
-    child.effect(() => {
-      void applyThemeLinkOnce().catch((error) => {
-        warn(`主题联动失败（不影响背景本身）：${describe(error)}`)
-      })
-      return () => {
-        // 插件的 effect 结束时不要再持有服务引用（避免热重载后拿到旧上下文）。
-        settingsService = null
-      }
-    })
-  })
-
-  // ── ③ 路由：webServer 是可选能力，晚到就晚接，不阻塞 apply ──
+  // ── ② 路由：webServer 是可选能力，晚到就晚接，不阻塞 apply ──
   ctx.inject(['webServer'], (child) => {
     child.effect(() => {
       /** @type {Array<() => void>} */
@@ -509,22 +461,79 @@ export function apply(ctx) {
               })
               res.end(text)
             }
-            /** 当前状态（标记 + 服务里读到的偏好）。 */
+            /**
+             * 当前状态。**这里才读 settings** —— 启动期一次都不碰。
+             *
+             * `ask` 模式下"要不要问"也在这里判断：只有标记不存在、且当前是浅色时才问，
+             * 问过/拒绝/切过之后标记落盘，永远不再问。
+             */
             const state = () => {
-              const marker = readThemeMarker(homeDir) ?? {}
-              const themeState = readThemeState()
+              const marker = readThemeMarker(homeDir)
+              const mode = current().client.theme?.mode ?? 'off'
+              const service = settingsNow()
+              const themeState =
+                service !== null && typeof service.describe === 'function'
+                  ? (() => {
+                      try {
+                        return pickThemeDescriptor(service.describe({ redactSecrets: true }))
+                      } catch {
+                        return null
+                      }
+                    })()
+                  : null
+              const decision = decideThemeLink({ mode, marker, preference: themeState?.preference })
               return {
-                enabled: current().client.theme?.autoDark !== false,
+                mode: mode,
                 preference: themeState?.preference ?? null,
-                switched: marker.switched === true,
-                previous: isThemePreference(marker.previous) ? marker.previous : null,
-                notified: marker.notified === true,
-                writable: settingsService?.writable !== false,
+                // 只要还没评估过、且是浅色，就把"该问一句"告诉客户端。
+                ask: decision.action === 'ask',
+                askPrevious: decision.action === 'ask' ? decision.previous : null,
+                evaluated: marker !== null,
+                switched: marker?.switched === true,
+                previous: isThemePreference(marker?.previous) ? marker.previous : null,
+                notified: marker?.notified === true,
+                writable: service !== null ? service.writable !== false : false,
               }
             }
 
             const method = String(req.method ?? 'GET').toUpperCase()
             if (method === 'GET') {
+              // **`auto` 模式就在这一刻动手**：页面已经加载、主动来问，远在启动握手之后。
+              // `ask` 模式只把 ask:true 告诉客户端，点了才写。
+              const mode = current().client.theme?.mode ?? 'off'
+              const marker = readThemeMarker(homeDir)
+              const service = settingsNow()
+              let preference
+              if (service !== null && typeof service.describe === 'function') {
+                try {
+                  preference = pickThemeDescriptor(service.describe({ redactSecrets: true }))?.preference
+                } catch {
+                  preference = undefined
+                }
+              }
+              const decision = decideThemeLink({ mode, marker, preference })
+              if (decision.action === 'mark') {
+                // 已经是深色：只落标记，免得用户以后切浅色时又被问/被改。
+                writeThemeMarker(homeDir, { evaluated: true, switched: false, at: new Date().toISOString() })
+                reply(200, { ok: true, ...state() })
+                return
+              }
+              if (decision.action === 'switch') {
+                void writeThemePreference('dark').then((ok) => {
+                  if (ok) {
+                    writeThemeMarker(homeDir, {
+                      evaluated: true,
+                      switched: true,
+                      previous: decision.previous,
+                      notified: false,
+                      at: new Date().toISOString(),
+                    })
+                    info(`auto 模式：已把浅色（${decision.previous}）切到深色，让聊天背景看得清`)
+                  }
+                  reply(200, { ok: true, ...state() })
+                })
+                return
+              }
               reply(200, { ok: true, ...state() })
               return
             }
@@ -567,10 +576,39 @@ export function apply(ctx) {
               }
               const action = typeof body.action === 'string' ? body.action : ''
               const marker = readThemeMarker(homeDir) ?? {}
+              const stamp = new Date().toISOString()
+
+              /** 把决定落盘，然后回报当前状态。 */
+              const finish = (patch, notice) => {
+                writeThemeMarker(homeDir, { ...marker, ...patch, at: stamp })
+                if (typeof notice === 'string') info(notice)
+                reply(200, { ok: true, ...state() })
+              }
+
+              // 用户点了「切到深色」。
+              if (action === 'dark') {
+                const previous = isThemePreference(marker.previous) ? marker.previous : 'light'
+                void writeThemePreference('dark').then((ok) => {
+                  if (!ok) {
+                    reply(409, { ok: false, error: 'theme settings are not writable', ...state() })
+                    return
+                  }
+                  finish(
+                    { evaluated: true, switched: true, previous, notified: true },
+                    `用户同意切到深色（原偏好 ${previous}）`,
+                  )
+                })
+                return
+              }
+
+              // 用户点了「保持浅色」：永远不再问。
+              if (action === 'keep') {
+                finish({ evaluated: true, switched: false, notified: true }, '用户选择保持浅色，不再提示')
+                return
+              }
 
               if (action === 'notified') {
-                writeThemeMarker(homeDir, { ...marker, notified: true })
-                reply(200, { ok: true, ...state() })
+                finish({ ...marker, notified: true })
                 return
               }
 
@@ -581,20 +619,15 @@ export function apply(ctx) {
                     reply(409, { ok: false, error: 'theme settings are not writable', ...state() })
                     return
                   }
-                  // 撤销之后就不能再自动切了（否则下次启动又变回去，用户会疯）。
-                  writeThemeMarker(homeDir, {
-                    ...marker,
-                    switched: false,
-                    notified: true,
-                    revertedAt: new Date().toISOString(),
-                  })
-                  info(`用户撤销了自动切换，主题已恢复为 ${previous}`)
-                  reply(200, { ok: true, ...state() })
+                  finish(
+                    { ...marker, switched: false, notified: true, revertedAt: stamp },
+                    `用户撤销了主题切换，已恢复为 ${previous}`,
+                  )
                 })
                 return
               }
 
-              reply(400, { ok: false, error: "action must be 'notified' or 'revert'" })
+              reply(400, { ok: false, error: "action must be 'dark' | 'keep' | 'notified' | 'revert'" })
             })
           },
         }),

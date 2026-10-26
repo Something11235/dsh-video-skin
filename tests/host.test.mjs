@@ -37,6 +37,11 @@ function makeContext() {
     },
   }
 
+  /** 记录 `ctx.get()` 的调用名（用来断言启动期不读任何服务）。 */
+  const getCalls = []
+  /** 记录 `ctx.inject()` 的依赖名（用来断言只有一个晚到服务）。 */
+  const injectCalls = []
+
   const ctx = {
     logger: {
       info: (message) => logs.push(['info', message]),
@@ -46,10 +51,18 @@ function makeContext() {
       if (event === 'webserver/index-inject') injectListeners.push(listener)
     },
     inject(names, callback) {
+      injectCalls.push([...names])
       if (names.includes('webServer')) callback({ webServer, effect: (factory) => disposers.push(factory()) })
+    },
+    // 只读查询：apply() 期间**不该**被调用（0.1.3 的启动崩溃就是启动期碰了 settings）。
+    get(name) {
+      getCalls.push(name)
+      return undefined
     },
     routes,
     injectListeners,
+    getCalls,
+    injectCalls,
     logs,
     disposers,
   }
@@ -103,6 +116,17 @@ test('apply() 不抛异常，并且注册了配置/开机/背景/滑块写回/�
   )
 })
 
+test('启动期绝不碰 settings，也不额外等任何服务（0.1.3 桌面版启动崩溃的回归守卫）', () => {
+  const { ctx } = boot()
+  // 这条是本仓库最重要的一条断言：
+  // 0.1.3 在 apply() 里 `ctx.inject(['settings'])` 并在激活期调 `settings.update()`，
+  // 而 update() 会改写 profile patch 文档 + 同步 describe()。桌面版启动握手是
+  // 「欢迎窗口第一个 RPC（settings.describe）非 2xx 就判启动失败、不重试」，
+  // 于是用户一装插件，桌面版就再也起不来。
+  // 现在：启动期零 settings 交互，所有读写都推迟到页面主动 GET /theme 之后。
+  assert.deepEqual(ctx.getCalls, [], '启动期不该 ctx.get() 任何服务')
+  assert.deepEqual(ctx.injectCalls, [['webServer']], '只等 webServer 一个服务')
+})
 test('注入行：两行、style 在前 script 在后、script 里没有 </script', () => {
   const { table } = boot()
   assert.equal(table.length, 2)

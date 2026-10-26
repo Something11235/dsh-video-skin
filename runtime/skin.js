@@ -914,6 +914,10 @@
       if (panel !== null) panel.remove()
       // 主题提示同理：它解释的是"为什么界面变深了"，背景层都没了就别留着。
       themeNotice = null
+      if (themeTimer !== null) {
+        global.clearTimeout(themeTimer)
+        themeTimer = null
+      }
       var notice = doc.getElementById('dsvs-theme-notice')
       if (notice !== null) notice.remove()
     } catch (error) {
@@ -1090,91 +1094,138 @@
 
   // ────────────────────── ③ 主题联动提示 ──────────────────────
   //
-  // 宿主半边在首次启动时把浅色用户切到深色（见 lib/theme.js）。这件事必须**说出来**，
-  // 否则用户会觉得插件乱改设置 —— 所以这里给一条一次性提示，带「恢复浅色」。
-  // 只在宿主报告 `switched && !notified` 时出现；点任何一个按钮都会把 notified 落盘。
+  // 两种形态，都由宿主的状态决定（**宿主只在页面来问的这一刻才碰 settings**）：
+  //   · mode=ask  ：问一句「切到深色更好看？」点了才改（默认，最保守）；
+  //   · mode=auto ：宿主已经切好了，这里只负责告诉他 + 给「恢复浅色」。
+  // 都是**一次性**的：点任何一个按钮 / 超时都会让宿主落标记，之后不再出现。
 
   /** 当前还挂着的提示节点（拆背景层时一起摘掉）。 */
   var themeNotice = null
+  /** 提示的延时器（拆背景层时清掉）。 */
+  var themeTimer = null
 
   function maybeShowThemeNotice() {
     var themeCfg = isObject(api.config) && isObject(api.config.theme) ? api.config.theme : {}
     var route = typeof themeCfg.route === 'string' ? themeCfg.route : ''
-    if (themeCfg.autoDark === false || route === '') return
+    var mode = typeof themeCfg.mode === 'string' ? themeCfg.mode : 'off'
+    if (mode === 'off' || route === '') return
     if (typeof global.fetch !== 'function') return
     if (doc.getElementById('dsvs-theme-notice') !== null) return
 
-    global
-      .fetch(route, { method: 'GET' })
-      .then(function (response) {
-        return response && response.ok ? response.json() : null
-      })
-      .then(function (state) {
-        if (!isObject(state) || state.ok !== true) return
-        if (state.switched !== true || state.notified === true) return
-        renderThemeNotice(route, state)
-      })
-      .then(undefined, noop)
+    // 延后一点再问：既让页面先安静下来，也远离宿主的启动握手
+    //（0.1.3 的启动崩溃就是因为在启动期就去碰 settings，见 lib/theme.js）。
+    themeTimer = global.setTimeout(function () {
+      themeTimer = null
+      if (typeof global.fetch !== 'function') return
+      global
+        .fetch(route, { method: 'GET', cache: 'no-store' })
+        .then(function (response) {
+          return response && response.ok ? response.json() : null
+        })
+        .then(function (state) {
+          if (!isObject(state) || state.ok !== true) return
+          if (state.ask === true) {
+            renderThemeAsk(route, state)
+            return
+          }
+          if (state.switched === true && state.notified !== true) {
+            renderThemeSwitched(route, state)
+          }
+        })
+        .then(undefined, noop)
+    }, 1500)
   }
 
-  function renderThemeNotice(route, state) {
-    if (doc.body === null) return
-    var previous = state.previous === 'light' ? '浅色' : '跟随系统'
+  /** 造那条提示的公共外壳：标题 + 正文 + 两个按钮。 */
+  function buildThemeNotice(title, bodyText, actions) {
+    if (doc.body === null) return null
     var box = el('div', null)
     box.id = 'dsvs-theme-notice'
     box.setAttribute('role', 'status')
-
     var text = el('div', 'dsvs-theme-text')
-    text.appendChild(el('div', 'dsvs-theme-title', '已切换到深色主题'))
-    text.appendChild(
-      el(
-        'div',
-        'dsvs-theme-body',
-        '聊天背景是深色短片，浅色主题下会被冲得很淡。原来的偏好是「' + previous + '」。',
-      ),
-    )
-
-    var actions = el('div', 'dsvs-theme-actions')
-    var revert = el('div', 'dsvs-theme-action dsvs-theme-revert', '恢复' + previous)
-    var keep = el('div', 'dsvs-theme-action dsvs-theme-keep', '保持深色')
-    actions.appendChild(revert)
-    actions.appendChild(keep)
+    text.appendChild(el('div', 'dsvs-theme-title', title))
+    text.appendChild(el('div', 'dsvs-theme-body', bodyText))
+    var row = el('div', 'dsvs-theme-actions')
+    for (var index = 0; index < actions.length; index += 1) row.appendChild(actions[index].node)
     box.appendChild(text)
-    box.appendChild(actions)
+    box.appendChild(row)
     doc.body.appendChild(box)
     themeNotice = box
-
-    /** 把提示收掉；`action` 决定要不要顺带把主题改回去。 */
-    var finish = function (action) {
-      if (themeNotice !== box) return
-      themeNotice = null
-      try {
-        box.remove()
-      } catch (error) {
-        /* 已经摘掉 */
-      }
-      var init = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: action }),
-      }
-      // 「恢复浅色」由宿主按标记里的原值写回内核 settings；「保持深色」只记"看过了"。
-      var sent = global.fetch(route, init)
-      if (sent && typeof sent.catch === 'function') sent.catch(noop)
-    }
-    revert.addEventListener('click', function () {
-      finish('revert')
-    })
-    keep.addEventListener('click', function () {
-      finish('notified')
-    })
-
-    // 一直不点也会自己消失，但要记成"看过了"，否则每次启动都弹。
-    global.setTimeout(function () {
-      if (themeNotice === box) finish('notified')
-    }, 20000)
+    return box
   }
 
+  /**
+   * 收掉提示并把用户的决定告诉宿主。
+   * @param {string} route 主题路由。
+   * @param {Element} box 提示节点。
+   * @param {string} action 要 POST 的动作。
+   */
+  function dismissThemeNotice(route, box, action) {
+    if (themeNotice !== box) return
+    themeNotice = null
+    try {
+      box.remove()
+    } catch (error) {
+      /* 已经摘掉 */
+    }
+    var sent = global.fetch(route, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action }),
+    })
+    if (sent && typeof sent.catch === 'function') sent.catch(noop)
+  }
+
+  /** mode=ask：问一句，点了才切。 */
+  function renderThemeAsk(route, state) {
+    var previous = state.askPrevious === 'light' ? '浅色' : '跟随系统'
+    var yes = el('div', 'dsvs-theme-action dsvs-theme-primary', '切到深色')
+    var no = el('div', 'dsvs-theme-action', '保持' + previous)
+    var box = buildThemeNotice(
+      '深色主题下背景更好看',
+      '聊天背景是深色短片，在「' + previous + '」下会被冲得很淡。要切到深色吗？只问一次。',
+      [
+        { node: no, action: 'keep' },
+        { node: yes, action: 'dark' },
+      ],
+    )
+    if (box === null) return
+    yes.addEventListener('click', function () {
+      dismissThemeNotice(route, box, 'dark')
+    })
+    no.addEventListener('click', function () {
+      dismissThemeNotice(route, box, 'keep')
+    })
+    // 一直不点就自己收起来，记成"拒绝了"，别再烦人。
+    global.setTimeout(function () {
+      if (themeNotice === box) dismissThemeNotice(route, box, 'keep')
+    }, 25000)
+  }
+
+  /** mode=auto：宿主已经切好了，告诉他 + 给一条后路。 */
+  function renderThemeSwitched(route, state) {
+    var previous = state.previous === 'light' ? '浅色' : '跟随系统'
+    var revert = el('div', 'dsvs-theme-action dsvs-theme-revert', '恢复' + previous)
+    var keep = el('div', 'dsvs-theme-action dsvs-theme-keep', '保持深色')
+    var box = buildThemeNotice(
+      '已切换到深色主题',
+      '聊天背景是深色短片，浅色主题下会被冲得很淡。原来的偏好是「' + previous + '」。',
+      [
+        { node: revert, action: 'revert' },
+        { node: keep, action: 'notified' },
+      ],
+    )
+    if (box === null) return
+    revert.addEventListener('click', function () {
+      dismissThemeNotice(route, box, 'revert')
+    })
+    keep.addEventListener('click', function () {
+      dismissThemeNotice(route, box, 'notified')
+    })
+    global.setTimeout(function () {
+      if (themeNotice === box) dismissThemeNotice(route, box, 'notified')
+    }, 25000)
+  }
   // ────────────────────── ③ 透明度调节（界面滑块） ──────────────────────
 
   /** 一键预设：[surface, veil]，即"面板不透明度 / 视频蒙版"。 */

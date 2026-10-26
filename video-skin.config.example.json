@@ -17,7 +17,7 @@
     "soundLabel": "开启声音"
   },
   "theme": {
-    "autoDark": true
+    "mode": "ask"
   },
   "background": {
     "enabled": true,

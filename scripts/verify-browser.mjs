@@ -998,13 +998,15 @@ try {
     }
 
     const duration = samples.find((item) => item.duration !== null)?.duration ?? null
+    // 300ms 的采样间隔踩不准"最后一帧"那种窄窗口，所以这里用 1 秒容差：
+    // 只要片尾前 1 秒内覆盖层还是 idle，就证明它没有提前开始淡（真正的守卫是 F5）。
     const heldToEnd = samples.find(
-      (item) => item.state === 'idle' && item.time !== null && duration !== null && item.time >= duration - 0.3,
+      (item) => item.state === 'idle' && item.time !== null && duration !== null && item.time >= duration - 1,
     )
     assert(duration !== null && duration > 7, 'F1 读到了片段时长（后面几条都靠它）', { duration, samples: samples.length })
     assert(
       heldToEnd !== undefined,
-      'F2 **片子走到片尾时覆盖层仍是 idle**（没有提前开始淡）',
+      'F2 片尾前 1 秒内覆盖层仍是 idle（没有提前开始淡）',
       { duration, samples },
     )
     assert(leavingSample !== null, 'F3 片子放完后确实开始交接', { samples })
@@ -1035,11 +1037,18 @@ try {
         { fadeSpan, leavingSample, gone },
       )
     }
-    const afterBoot = await cdp.evaluate(`(() => {
-      const layer = document.querySelector('#dsvs-backdrop')
-      const video = document.querySelector('#dsvs-backdrop-video')
-      return { hasLayer: layer !== null, layerHasVideo: video !== null }
-    })()`)
+    // 覆盖层一消失不代表背景层**同一微任务**就建好了（它是交接后异步建的），
+    // 所以这里轮询等一下，别把"还没建"当成"不会建"。
+    let afterBoot = { hasLayer: false, layerHasVideo: false }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      afterBoot = await cdp.evaluate(`(() => {
+        const layer = document.querySelector('#dsvs-backdrop')
+        const video = document.querySelector('#dsvs-backdrop-video')
+        return { hasLayer: layer !== null, layerHasVideo: video !== null }
+      })()`)
+      if (afterBoot.hasLayer && afterBoot.layerHasVideo) break
+      await sleep(200)
+    }
     assert(afterBoot.hasLayer && afterBoot.layerHasVideo, 'F9 交接之后背景层照常建起来', afterBoot)
     console.log(`     完整播放：duration=${duration}s，退场 fade=${leavingSample?.fade}，t=${leavingSample?.time}s`)
   }

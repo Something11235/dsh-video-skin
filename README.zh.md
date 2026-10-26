@@ -202,7 +202,7 @@ powershell -ExecutionPolicy Bypass -File "D:\Projects\DSH工作台\插件制作\
 
 | 项 | 默认 | 作用 |
 | --- | --- | --- |
-| **`autoDark`** | `true` | 首次启动时如果是浅色主题就**一次性**切到深色（这条素材在浅色下几乎看不见）。切完给可撤销提示；用户撤销或自己切回去之后永远不再动。设 `false` 完全关掉 |
+| **`mode`** | `ask` | `ask` = 只弹一句提示、点了才切（默认）；`auto` = 页面加载后自动切并给撤销入口；`off` = 完全关掉。**启动期绝不会碰设置**（0.1.3 的启动崩溃就是踩了这个，见 §3.4） |
 | **`panel`** | `1` | **对话框/弹层/菜单/卡片/设置页**的不透明度。`1` = 内核原生不透明（默认，最稳）；小于 1 才覆盖 `layer-1/2/3`，会透出背后的内容 |
 | **`controls`** | `true` | 是否显示右下角的透明度调节控件（圆钮 + 滑块面板）。关掉就只能改 JSON |
 | `delayMs` | `1200` | 界面就绪后多久开始加载背景视频（把开机阶段的带宽留给界面） |
@@ -298,37 +298,64 @@ powershell -ExecutionPolicy Bypass -File "D:\Projects\DSH工作台\插件制作\
 这条边界有回归断言守着：真浏览器验收里的 **B20/B22**（`layer-1`/对话框 `layer-2` 在两个主题下
 alpha 都必须等于 1），单元测试里则是"`--dsvs-layer1/2/3` 不该由插件派生"。
 
-### 3.3 浅色主题的用户会被自动切到深色（只一次，可撤销）
+### 3.3 浅色主题的提示：默认只问一句，不自己改
 
 **为什么**：这条素材整体偏暗（实测 `YAVG ≈ 0.25`）。浅色主题下为了保证正文可读，白面必须做到
 0.6 不透明度，结果视频被冲得几乎看不见 —— 用户装了皮肤却看不到皮肤，而且**大部分人不知道
-要去设置里切深色**。所以装完第一次启动时，插件会把浅色用户切到深色。
+要去设置里切深色**。
 
-**怎么做的（三条约束，都是为了别变成那种乱改用户设置的插件）**：
+**怎么做的**（`theme.mode`，默认 `ask`）：
+
+| 模式 | 行为 |
+| --- | --- |
+| **`ask`（默认）** | 页面加载后弹一条提示「深色主题下背景更好看，要切到深色吗？」——**点了才改**，拒绝就永远不再问 |
+| `auto` | 页面加载后自动切，并给一条「恢复浅色」的提示 |
+| `off` | 什么都不做 |
+
+![深色提示](docs/e2e-7-theme-ask.png)
+
+三条约束：
 
 | 约束 | 实现 |
 | --- | --- |
-| **只做一次** | `$DSH_HOME/dsh-video-skin.theme.json` 是"已评估"标记。切过一次之后，用户自己再切回浅色**永远不会**被我们改回去 |
-| **走官方写入口** | 内核的 settings 服务：`ctx.settings.update('ui-theme', { preference: 'dark' })`。**绝不手改** profile 里的 `cordis.patch.yml`（那是用户的文件，写坏了整个 profile 起不来） |
-| **可撤销 + 说出来** | 切完弹一条一次性提示（见下图），点「恢复浅色」就按标记里记的原值（`light` / `system`）写回去，并把标记改成"已撤销" |
+| **启动期绝不碰 settings** | 所有 settings 读写都在「页面加载完、主动 `GET /theme`」之后。见下面 §3.4 的复盘 |
+| **只打扰一次** | `$DSH_HOME/dsh-video-skin.theme.json` 记"已评估"。拒绝/撤销/自己切回去之后永远不再问 |
+| **走官方写入口** | 内核 settings 服务（`ctx.settings.update('ui-theme', { preference })`）。**不手改** profile 的 `cordis.patch.yml` |
 
-![主题联动提示](docs/e2e-7-theme-notice.png)
+### 3.4 复盘：0.1.3 让桌面版起不来的事故
 
-细节：
+0.1.3 为了"装完自动切深色"，在**插件激活期**就调了 `ctx.settings.update()`。而 `settings.update()`
+会走 `configEditor.edit()` **改写 profile patch 文档**，并在其中同步调用 `describe()`。
 
-- 已经是深色的用户：只落标记，不动任何设置（避免他以后切浅色时被我们再改）。
-- 读不到当前偏好：什么都不做 —— 宁可不做，也不要在不知道状态时乱写。
-- 不想要这个行为：配置里 `theme.autoDark: false`（见 §3 的配置表）。
-- 想吃后悔药：点提示里的「恢复浅色」，或者自己在 设置 → 外观 里切回去 —— 两种都会让插件永久闭嘴。
+桌面版的启动握手是：欢迎窗口发出第一个 RPC（`settings.describe`）→ 非 2xx 就
+`throw new Error('desktop welcome: Web request failed')` → 应用判启动失败，**不重试**
+（`app.asar/lib/main.js` 的 8903 / 13018 行）。于是那条"启动期的配置写入"一抖，
+用户的应用就再也起不来 —— 连续三次同样报错，卸载插件才恢复。
 
-端到端验证脚本（需要先准备一个浅色主题的独立 profile，脚本头部写了步骤）：
+**0.1.4 的修复**：
+
+- `apply()` 里**不再** `ctx.inject(['settings'])`，改成 `ctx.get('settings')`（只读、不参与激活顺序），
+  而且只在主题路由的请求处理里取；
+- 启动期**不写任何设置**、不创建标记文件；
+- 回归守卫：`tests/host.test.mjs` 里有一条断言 —— `apply()` 期间 `ctx.getCalls` 必须为空、
+  `ctx.injectCalls` 必须只有 `[['webServer']]`。
+
+顺带记一个内核侧的脆弱点（已反馈给上游）：欢迎窗口的第一个 RPC 没有重试，任何插件在启动期拖慢
+或扰动 settings 都可能把应用焊死。
+
+### 3.5 出事了怎么救（以及一个会丢配置的坑）
+
+应用起不来时，崩溃对话框有第三个按钮 **「Disable third-party plugins, back up profile patch, and restart」**。
+它确实能救急，但它会把 `dsh.profile.bundles` 砍到只剩 base + web-app，并**重写** `cordis.patch.yml`
+—— 无关的行（`agent-default-model`、`ui-theme`、`dsh-ops-*` 之类）会被**静默丢掉**。
+所以：**点之前先把 profile 目录整个复制一份**；救回来之后对照备份把丢掉的配置补回去。
+
+更稳的做法是只用 CLI：
 
 ```powershell
-node scripts/verify-theme.mjs --url "<带令牌地址>" --dsh-home <DSH_HOME>
-# 12 条断言：宿主自动切深色 → 页面真的变深 → 提示出现 → 点「恢复浅色」→
-#            主题变回浅色 → 标记改成已撤销 → 宿主路由报告 light
+dsh plugin --profile desktop remove dsh-video-skin      # 只摘掉这一个插件
+dsh plugin --profile desktop add dsh-video-skin@0.1.4   # 修好后再装回来
 ```
-
 ## 4. 它是怎么接进去的（以及几个不许改的约束）
 
 ```

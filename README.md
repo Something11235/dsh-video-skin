@@ -42,12 +42,17 @@ then fading into the app, and **skippable with a click**.
   view with `--dsw-alias-bg-layer-1/2/3` (`_dialog_* { background: var(--dsw-alias-bg-layer-2) }`), so
   those tokens are deliberately **left untouched** — otherwise the scrolling text behind a dialog shows
   through it and neither layer is readable.
-- **Light-theme users get switched to dark once.** The asset is dark (`YAVG ≈ 0.25`), so a readable
+- **Light-theme hint (default `theme.mode: 'ask'`).** The asset is dark (`YAVG ≈ 0.25`), so a readable
   light theme needs a 0.6 white surface and the video washes out — most people never find the theme
-  toggle. On first launch the plugin moves a light preference to `dark` **once**, through the kernel's
-  own settings service (`ctx.settings.update('ui-theme', …)`, never by editing the profile YAML), shows
-  a one-time notice with **恢复浅色 / keep dark**, and never touches it again once you undo or change it
-  yourself. Disable with `theme.autoDark: false`. See `scripts/verify-theme.mjs` (12 assertions).
+  toggle. After the page loads the plugin asks once whether to switch to dark; nothing changes unless
+  you click. `auto` switches by itself, `off` disables it. The write goes through the kernel's settings
+  service (`ctx.settings.update('ui-theme', …)`, never by editing the profile YAML) — **never during
+  activation**, which is what broke desktop startup in 0.1.3 (see §"Startup safety").
+- **Startup safety.** 0.1.3 called `settings.update()` while the plugin was still activating; that write
+  rewrites the profile patch document, and the desktop welcome window aborts startup if its first RPC
+  (`settings.describe`) is not 2xx, without retrying (`app.asar/lib/main.js:8903/13018`). 0.1.4 touches
+  no settings during activation at all, and `tests/host.test.mjs` asserts it (`apply()` must not call
+  `ctx.get`, and may only `inject(['webServer'])`). See `scripts/verify-theme.mjs` (17 assertions).
 - A **transparency panel in the UI** (bottom-right pill): three sliders — canvas, video scrim, and
   **raised surfaces** (dialogs/settings) — plus three presets and a live body-text contrast readout.
   The surface slider defaults to **100% (kernel-native opaque)**; dial it down for a frosted look.
