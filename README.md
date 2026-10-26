@@ -10,8 +10,11 @@
 **设置 → 插件 → 添加插件**，把下面这一行贴进输入框，点「安装」，然后**完全退出并重新打开 DSH**：
 
 ```
-github:Something11235/dsh-video-skin#main
+dsh-video-skin@0.1.5
 ```
+
+- Prebuilt on npm (current latest `0.1.5`); `dsh-video-skin` without a version follows latest.
+- From source: `github:Something11235/dsh-video-skin#main`
 
 > 桌面版（Electron）的索引注入表是**宿主启动时收集一次**的快照，所以装完必须**完全重启 DSH**
 > 才会生效（刷新页面不够）。卸载：`dsh plugin --profile <你的 profile> remove dsh-video-skin`，

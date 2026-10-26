@@ -27,16 +27,19 @@ DSH 的**视频皮肤**：把一段短片铺成整个 Web 界面的**聊天背�
 **设置 → 插件 → 添加插件**，贴进这一行，点「安装」，然后 **完全退出并重新打开 DSH**：
 
 ```
-github:Something11235/dsh-video-skin#main
+dsh-video-skin@0.1.5
 ```
 
+- **npm 上有预构建产物**（当前最新 `0.1.5`，包内已含素材与产物，不需要构建）。国内装 npm 比装 GitHub 快得多；
+  只想跟随最新版也可以不写版本号：`dsh-video-skin`。
+- 走 GitHub 源码也行（内容一致，但国内可能要代理）：`github:Something11235/dsh-video-skin#main`
 - 桌面版（Electron）的索引注入表是**宿主启动时收集一次**的快照 ⇒ 装完必须**完全重启 DSH**（刷新页面不够）。
 - 仓库里**已经提交了运行所需的一切**（`index.js` / `lib` / `runtime` / `assets` 的 mp4），
   而且**没有 `prepare` 脚本** —— 这不是省事，是必须：pnpm 会拦 git 依赖的构建脚本，
   带 `prepare` 的仓库会让 `dsh plugin add "github:..."` 直接失败（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），
   **即使产物已经提交**。
 - 卸载：`dsh plugin --profile <你的 profile> remove dsh-video-skin`，或用仓库里的 `scripts/uninstall.ps1`。
-- 国内网络直连 github 可能慢：装不上时可以加代理，或先把仓库 fork 到你自己的账号再装 fork 的地址。
+- 国内网络直连 github 可能慢：装不上时可以加代理，或先用 npm 那条。
 
 ## 0. 它长什么样（本机实测截图）
 
@@ -364,7 +367,7 @@ alpha 都必须等于 1），单元测试里则是"`--dsvs-layer1/2/3` 不该由
 
 ```powershell
 dsh plugin --profile desktop remove dsh-video-skin      # 只摘掉这一个插件
-dsh plugin --profile desktop add dsh-video-skin@0.1.4   # 修好后再装回来
+dsh plugin --profile desktop add dsh-video-skin@0.1.5   # 修好后再装回来
 ```
 ### 3.6 换掉 / 关掉素材（开机动画、聊天背景各管各的）
 
