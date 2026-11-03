@@ -420,7 +420,7 @@ node scripts/verify-media.mjs --url "<带令牌地址>" --dsh-home <DSH_HOME>
 双方都想管**局内背景**（`z-index:-1` 那一层 + 页面的半透明化 token），天然会打架：
 我们的 `#dsvs-backdrop` 会盖住对方的壁纸，对方也看不到自己的画。
 
-**现在的默认行为是"自动让路"**：只要对方在 `body` 上挂了公开标记 `data-we-wallpaper`（= 有壁纸在台上），
+**现在的默认行为是"自动让路"**：只要对方在 `body` 上挂了公开标记 `data-we-wallpaper`（= 有壁纸在台上；来源：它的 `src/client.js` 里 `ACTIVE_ATTR`，由 `src/live-layer-underlay.js` 写上 `"on"`），
 本插件就不建背景层、也不挂 `data-dsvs`（所以不会用 `!important` 去压页面底色 token），
 壁纸正常透出来；壁纸撤掉后我们的背景**自动接回来**。整个过程**不碰开机动画**。
 

@@ -93,10 +93,19 @@
   var backdropStarting = false
 
   /**
-   * 别的壁纸插件在 body 上挂的**公开标记**（issue #4 里 dsh-wallpaper-engine 作者确认的约定）。
+   * 别的壁纸插件在 body 上挂的**公开标记**。
    *
-   * 规则：只要有值就说明"此刻有一张别的壁纸在台上"；我们默认（`background.mode: 'auto'`）
-   * 就**不让路**：不建背景层、不挂 `data-dsvs`，让壁纸透出来。壁纸撤掉后自动把我们的背景重新建起来。
+   * 来源（不是猜的，2026-11-03 核过源码）：
+   *   dsh-wallpaper-engine `src/client.js:62`  `const ACTIVE_ATTR = "data-we-wallpaper"`；
+   *   `src/live-layer-underlay.js:250`  `if (active) body.setAttribute(ACTIVE_ATTR, "on")`，
+   *   否则 `removeAttribute`。`we` = **w**allpaper **e**ngine 的缩写（同一套前缀还有
+   *   `data-we-adapter` / `data-we-mica` / `data-we-sidebar-fullclear`）。
+   *   语义只有一句话："此刻有一张壁纸在台上"。
+   *
+   * 规则：只要有值（且不是 off/false/0）就说明壁纸在台上；默认（`background.mode: 'auto'`）
+   * 我们就**让路**：不建背景层、不挂 `data-dsvs`，让壁纸透出来。壁纸撤掉后自动把背景重建起来。
+   * 我们**只读**这个属性、从不写它 —— 依赖别人的公开标记，不依赖它的内部类名。
+   *
    * 这条约定是双向的 —— 我们也在 `<html>` 上挂只读标记 `data-dsvs-background="on"`，
    * 别的插件想避让时可以直接读它，不必去猜 `#dsvs-backdrop` 在不在。
    */
