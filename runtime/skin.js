@@ -1729,6 +1729,7 @@
           // 记住"没有让路时该显示什么"，让路只是加前缀，不覆盖素材名。
           row.baseNote = (value.custom === true ? '自定义 · ' : '') + name
           row.note.textContent = row.baseNote
+          row.note.title = row.baseNote
         }
         var bgOff = rows.background !== undefined && rows.background.enabled === false
         parent.setAttribute('data-media-off', bgOff ? '1' : '0')
@@ -1756,8 +1757,6 @@
           row.setAttribute('data-slot', spec.slot)
           var top = el('div', 'dsvs-media-top')
           top.appendChild(el('span', 'dsvs-media-name', spec.label))
-          var note = el('span', 'dsvs-media-note', '')
-          top.appendChild(note)
 
           var actions = el('div', 'dsvs-media-actions')
           var toggle = el('div', 'dsvs-media-toggle', '开')
@@ -1771,6 +1770,9 @@
           actions.appendChild(reset)
           top.appendChild(actions)
           row.appendChild(top)
+          // 第二行：完整显示素材名（第一行放不下就会被截断，这里给足宽度 + 悬停看全名）。
+          var note = el('div', 'dsvs-media-note', '')
+          row.appendChild(note)
           block.appendChild(row)
 
           var file = doc.createElement('input')
@@ -1879,8 +1881,6 @@
       var modeRow = el('div', 'dsvs-media-row dsvs-media-mode')
       var modeTop = el('div', 'dsvs-media-top')
       modeTop.appendChild(el('span', 'dsvs-media-name', '背景归属'))
-      var modeStatus = el('span', 'dsvs-media-note', '')
-      modeTop.appendChild(modeStatus)
       var modeActions = el('div', 'dsvs-media-actions')
       var autoBtn = el('div', 'dsvs-media-btn', '自动让路')
       var ownBtn = el('div', 'dsvs-media-btn', '始终接管')
@@ -1888,6 +1888,8 @@
       modeActions.appendChild(ownBtn)
       modeTop.appendChild(modeActions)
       modeRow.appendChild(modeTop)
+      var modeStatus = el('div', 'dsvs-media-note', '')
+      modeRow.appendChild(modeStatus)
       block.appendChild(modeRow)
 
       /** 当前模式（优先运行期配置）。 */
@@ -1903,18 +1905,21 @@
         autoBtn.setAttribute('data-active', mode === 'auto' ? '1' : '0')
         ownBtn.setAttribute('data-active', mode === 'own' ? '1' : '0')
         if (mode === 'own') {
-          modeStatus.textContent = occupied ? '始终接管中 · 检测到其他壁纸插件' : '始终接管中'
+          modeStatus.textContent = occupied ? '始终接管中 · 检测到其他壁纸插件' : '始终接管中 · 未检测到其他壁纸插件'
         } else if (occupied) {
           modeStatus.textContent = '已让路 · 检测到其他壁纸插件'
         } else {
           modeStatus.textContent = '自动让路 · 未检测到其他壁纸插件'
         }
+        modeStatus.title = modeStatus.textContent
         // 让路时把"聊天背景"那行的名字前面加一句，避免用户以为坏了。
         var bgRow = rows.background
         if (bgRow !== undefined) {
           var yielding = mode !== 'own' && occupied
           bgRow.row.setAttribute('data-yielded', yielding ? '1' : '0')
-          bgRow.note.textContent = (yielding ? '已让路 · ' : '') + (bgRow.baseNote || '')
+          var bgText = (yielding ? '已让路 · ' : '') + (bgRow.baseNote || '')
+          bgRow.note.textContent = bgText
+          bgRow.note.title = bgText
         }
       }
 

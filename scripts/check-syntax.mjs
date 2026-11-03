@@ -14,9 +14,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 /** ESM 半边：import 一次 = 解析 + 求值。 */
-const MODULES = ['index.js', 'lib/route.js', 'lib/config.js', 'lib/injections.js']
+const MODULES = ['index.js', 'lib/route.js', 'lib/config.js', 'lib/injections.js', 'lib/theme.js', 'lib/media.js']
 /** 注入进页面的脚本文本：只解析，不执行。 */
-const SCRIPTS = ['runtime/skin.js']
+// runtime/skin.js = 内联注入到页面的运行时；client.js = 走 __ModuleLoader__ 的客户端插件（设置页卡片）。
+const SCRIPTS = ['runtime/skin.js', 'client.js']
 /** 注入进页面的样式文本：只检查容器标签不会被提前闭合。 */
 const STYLES = ['runtime/skin.css']
 

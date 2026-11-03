@@ -51,6 +51,11 @@ then fading into the app, and **skippable with a click**.
   you click. `auto` switches by itself, `off` disables it. The write goes through the kernel's settings
   service (`ctx.settings.update('ui-theme', …)`, never by editing the profile YAML) — **never during
   activation**, which is what broke desktop startup in 0.1.3 (see §"Startup safety").
+- **A settings page too** (Settings → 视频皮肤): status summary, background-ownership toggle, the three
+  opacity sliders, and per-asset on/off. It is a small **client half** (`client.js`, `__ModuleLoader__`
+  lazy CJS, no build step) registered into the client `settings.section` slot; all data goes through the
+  host routes the plugin already owns. `scripts/verify-settings.mjs` covers it and reports `SKIP` on a
+  not-logged-in profile (where DSH exposes no Settings entry at all).
 - **Plays nice with wallpaper plugins.** If another plugin marks `body[data-we-wallpaper]` (the public
   convention from dsh-wallpaper-engine, issue #4), the skin **yields by default**: no backdrop layer,
   no `data-dsvs` token overrides, so the wallpaper shows through; the boot animation is untouched and

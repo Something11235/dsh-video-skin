@@ -371,7 +371,7 @@ body:not([data-ds-dark-theme]) #dsvs-knobs-pill {
   right: 16px;
   bottom: 58px;
   z-index: 901;
-  width: 268px;
+  width: 300px;
   display: none;
   flex-direction: column;
   gap: 10px;
@@ -711,6 +711,7 @@ body:not([data-ds-dark-theme]) .dsvs-media {
 .dsvs-media-top {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
 }
 
@@ -720,18 +721,18 @@ body:not([data-ds-dark-theme]) .dsvs-media {
   font-size: 12px;
 }
 
+/* 素材名 / 归属状态：独占一行、允许换行，不再被挤成一个 "backgro…" */
 .dsvs-media-note {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 11px;
-  opacity: 0.66;
+  line-height: 1.4;
+  opacity: 0.68;
+  overflow-wrap: anywhere;
+  margin-top: 1px;
 }
 
 .dsvs-media-actions {
   flex: 0 0 auto;
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 5px;
