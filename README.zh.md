@@ -444,6 +444,15 @@ node scripts/verify-media.mjs --url "<带令牌地址>" --dsh-home <DSH_HOME>
 还留了一个入口：`background.mode: "off"` 等价于关掉局内背景（只保留开机动画），
 和面板里把「聊天背景」关掉是同一个效果。
 
+真插件集成检查（要求 scratch profile 里**真的装了壁纸引擎**，能抓出两边 CSS 互踩）：
+
+```powershell
+dsh plugin --profile verify add dsh-plugin-wallpaper-engine
+node scripts/verify-coexist.mjs --url "<带令牌地址>" --shot-dir docs
+# 13 条断言：没壁纸时接管 → 壁纸上台时让路（撤层/撤标记/面板留/状态文字）→ 壁纸撤掉自动接回 →
+#            页面无未捕获异常
+```
+
 > 已知边界：切到 `own`（始终接管）时，对方的 `.we-scrim`（同样 `z-index:-1`，但更晚插入 DOM）
 > 会按文档序压在我们的视频上，把画面压暗一点 —— 这是"两个插件都坚持要当背景"的必然结果，
 > 用默认的 `auto` 就不会遇到。
