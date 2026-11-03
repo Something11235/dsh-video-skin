@@ -64,7 +64,7 @@ export const THEME_ROUTE = `${ROUTE_PREFIX}/theme`
 export const MEDIA_ROUTE = `${ROUTE_PREFIX}/media`
 
 /** 与 package.json 的 version 保持一致。 */
-export const VERSION = '0.1.5'
+export const VERSION = '0.1.6'
 
 /** 路由表：同时是配置解析的输入。 */
 const ROUTES = Object.freeze({
@@ -684,7 +684,13 @@ export function apply(ctx) {
                 custom: client[key].custom === true,
                 name: paths[key] === undefined ? '默认素材' : path.basename(paths[key]),
               })
-              return { ok: true, boot: one('boot'), background: one('background'), warnings: loadWarnings }
+              return {
+                ok: true,
+                boot: one('boot'),
+                // mode: 别的壁纸插件在台上时是否让路（auto / own）。
+                background: { ...one('background'), mode: client.background.mode ?? 'auto' },
+                warnings: loadWarnings,
+              }
             }
             /** @param {Record<string, Record<string, unknown>>} patch 素材改动。 */
             const persist = (patch, notice) => {
@@ -757,13 +763,21 @@ export function apply(ctx) {
                     return
                   }
                 }
-                if (typeof body.enabled !== 'boolean') {
-                  reply(400, { ok: false, error: 'enabled must be a boolean' })
+                /** @type {Record<string, unknown>} */
+                const patch = {}
+                if (typeof body.enabled === 'boolean') patch.enabled = body.enabled
+                if (body.mode === 'auto' || body.mode === 'own' || body.mode === 'off') patch.mode = body.mode
+                if (Object.keys(patch).length === 0) {
+                  reply(400, { ok: false, error: 'enabled must be a boolean (or mode: auto|own|off)' })
                   return
                 }
+                // mode 只对背景这一层有意义（开机动画永远保留）。
+                const target = { [slot]: patch }
                 persist(
-                  { [slot]: { enabled: body.enabled } },
-                  `${slot} ${body.enabled ? '已开启' : '已关闭'}`,
+                  target,
+                  patch.mode !== undefined
+                    ? `局内背景归属：${patch.mode === 'own' ? '始终接管' : '自动让路'}`
+                    : `${slot} ${patch.enabled === true ? '已开启' : '已关闭'}`,
                 )
               })
               return

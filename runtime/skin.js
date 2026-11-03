@@ -91,6 +91,22 @@
   var backdrop = null
   /** 背景层正在等运行期配置，防止 `startBackdrop` 被并发调用建出两层。 */
   var backdropStarting = false
+
+  /**
+   * 别的壁纸插件在 body 上挂的**公开标记**（issue #4 里 dsh-wallpaper-engine 作者确认的约定）。
+   *
+   * 规则：只要有值就说明"此刻有一张别的壁纸在台上"；我们默认（`background.mode: 'auto'`）
+   * 就**不让路**：不建背景层、不挂 `data-dsvs`，让壁纸透出来。壁纸撤掉后自动把我们的背景重新建起来。
+   * 这条约定是双向的 —— 我们也在 `<html>` 上挂只读标记 `data-dsvs-background="on"`，
+   * 别的插件想避让时可以直接读它，不必去猜 `#dsvs-backdrop` 在不在。
+   */
+  var WALLPAPER_ATTR = 'data-we-wallpaper'
+  /** 我们自己对外暴露的只读标记：本插件此刻是否真的在管背景。 */
+  var BACKGROUND_ATTR = 'data-dsvs-background'
+  /** 壁纸标记的观察者（`background.mode` 不是 auto 时不需要）。 */
+  var wallpaperObserver = null
+  /** 素材区控制器（壁纸状态变了要刷新那行文字）。 */
+  var mediaUi = null
   /**
    * 注入行里那份**部署期快照**的背景段。
    *
@@ -927,6 +943,7 @@
     // 撤掉 data-dsvs ⇒ skin.css 里所有表面半透明规则立刻失效，界面回到原生外观。
     try {
       doc.documentElement.removeAttribute('data-dsvs')
+      doc.documentElement.removeAttribute(BACKGROUND_ATTR)
     } catch (error) {
       /* 尽力而为 */
     }
@@ -962,6 +979,7 @@
     // 没有画面就不能再让表面半透明，否则界面会变成"没有背景、字还发灰"。
     try {
       doc.documentElement.removeAttribute('data-dsvs')
+      doc.documentElement.removeAttribute(BACKGROUND_ATTR)
     } catch (error) {
       /* 尽力而为 */
     }
@@ -1039,6 +1057,80 @@
     })
   }
 
+  /**
+   * 现在有没有别的壁纸插件在台上？读 body 上那条公开约定。
+   *
+   * 约定来自 issue #4：dsh-wallpaper-engine 在"有壁纸时"给 body 挂
+   * `data-we-wallpaper`（值为 `on`），清空壁纸时摘掉。做的是**单向让路**：
+   * 我们只读、从不写这个属性；我们对外暴露的是自己的 `data-dsvs-background`。
+   * @returns {boolean} 是否有别的壁纸在台上。
+   */
+  function otherWallpaperActive() {
+    try {
+      if (!doc.body) return false
+      var value = doc.body.getAttribute(WALLPAPER_ATTR)
+      if (value === null) return false
+      // 值是 on / 空串 / 任意真值都算"在台上"；明确写 off/false/0 才算不在。
+      var lowered = String(value).toLowerCase()
+      return lowered !== 'off' && lowered !== 'false' && lowered !== '0'
+    } catch (error) {
+      return false
+    }
+  }
+
+  /**
+   * 当前是否该把局内背景**让**给别的壁纸插件。
+   *
+   * 只有 `background.mode: 'auto'`（默认）才让；`'own'` 是用户显式选择"始终接管"。
+   * @returns {boolean} 是否让路。
+   */
+  function shouldYieldToWallpaper() {
+    var bg = isObject(liveCfg.background) ? liveCfg.background : {}
+    if (bg.mode === 'own') return false
+    return otherWallpaperActive()
+  }
+
+  /** 把"是否在让路"记进运行期状态（日志/验收脚本都读它）。 */
+  function markYield(yielding) {
+    api.state.yielded = yielding === true
+    if (yielding === true) api.state.reason = 'wallpaper-occupied'
+    else if (api.state.reason === 'wallpaper-occupied') api.state.reason = 'active'
+  }
+
+  /**
+   * 壁纸标记变了之后重新裁决：该让就让（撤层），该接就接（重建）。
+   * 开机动画不在这一层，所以完全不受影响。
+   */
+  function syncWallpaperYield() {
+    var bg = isObject(liveCfg.background) ? liveCfg.background : {}
+    // 统一在这里裁决：三种情况都要处理（让路 / 接管时补建 / 什么都不用干）。
+    var yielding = bg.mode !== 'own' && otherWallpaperActive()
+    if (yielding) {
+      if (backdrop !== null) detachBackdropMedia()
+    } else if (backdrop === null && !backdropStarting && bg.enabled !== false) {
+      // 用户点了「始终接管」，或者壁纸撤了 —— 把我们的层补回来。
+      startBackdrop()
+    }
+    markYield(yielding)
+    if (mediaUi !== null && typeof mediaUi.refreshStatus === 'function') mediaUi.refreshStatus()
+  }
+
+  /** 盯住 body 上的壁纸标记（`mode: 'own'` 时也装着，用户切回 auto 立刻生效）。 */
+  function startWallpaperWatch() {
+    if (wallpaperObserver !== null) return
+    var Ctor = global.MutationObserver
+    if (typeof Ctor !== 'function' || !doc.body) return
+    try {
+      wallpaperObserver = new Ctor(function () {
+        syncWallpaperYield()
+      })
+      wallpaperObserver.observe(doc.body, { attributes: true, attributeFilter: [WALLPAPER_ATTR] })
+    } catch (error) {
+      wallpaperObserver = null
+      api.state.failures.push('wallpaper-watch')
+    }
+  }
+
   function startBackdrop() {
     if (backdrop !== null || backdropStarting) return
     backdropStarting = true
@@ -1068,10 +1160,25 @@
       try {
         buildControls(null)
       } catch (error) {
-        api.state.failures.push('controls-fatal')
+        api.state.failures.push('controls-fatal:' + (error && error.message ? error.message : 'unknown'))
       }
       return
     }
+    if (!doc.body) return
+    // 先装上观察者：不管这次建不建层，之后壁纸来/走都要能重新裁决。
+    startWallpaperWatch()
+    // 别的壁纸插件在台上 → 让路：不建层、不挂 data-dsvs，让壁纸透出来。
+    // 面板仍然要挂（否则用户没有入口去改"始终接管"）。
+    if (shouldYieldToWallpaper()) {
+      markYield(true)
+      try {
+        buildControls(null)
+      } catch (error) {
+        api.state.failures.push('controls-fatal:' + (error && error.message ? error.message : 'unknown'))
+      }
+      return
+    }
+    markYield(false)
     // 尊重系统的"减少动态效果"：常驻循环动画是这块设置主要管的东西。
     try {
       if (typeof global.matchMedia === 'function' && global.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -1080,7 +1187,6 @@
     } catch (error) {
       /* 拿不到就照常播 */
     }
-    if (!doc.body) return
 
     var layer = el('div', null)
     layer.id = 'dsvs-backdrop'
@@ -1102,6 +1208,8 @@
     layer.appendChild(veil)
     doc.body.insertBefore(layer, doc.body.firstChild)
     doc.documentElement.setAttribute('data-dsvs', 'on')
+    // 对外只读标记：别的壁纸插件据此避让，不用猜 #dsvs-backdrop 在不在。
+    doc.documentElement.setAttribute(BACKGROUND_ATTR, 'on')
     // 用**已经合并过运行期配置**的值来算，所以不会先建好再跳一下。
     applyVisuals(liveCfg)
 
@@ -1609,10 +1717,14 @@
           row.toggle.setAttribute('aria-checked', row.enabled ? 'true' : 'false')
           row.row.setAttribute('data-off', row.enabled ? '0' : '1')
           var name = typeof value.name === 'string' && value.name !== '' ? value.name : '默认素材'
-          row.note.textContent = (value.custom === true ? '自定义 · ' : '') + name
+          // 记住"没有让路时该显示什么"，让路只是加前缀，不覆盖素材名。
+          row.baseNote = (value.custom === true ? '自定义 · ' : '') + name
+          row.note.textContent = row.baseNote
         }
         var bgOff = rows.background !== undefined && rows.background.enabled === false
         parent.setAttribute('data-media-off', bgOff ? '1' : '0')
+        // 归属/让路状态跟着（它依赖 body 上的壁纸标记，和素材状态是两件事）。
+        if (typeof refreshStatus === 'function') refreshStatus()
       }
 
       /** 拉一次真实状态（快照里没有"当前用的是哪个文件"）。 */
@@ -1753,9 +1865,91 @@
         })(SLOTS[index])
       }
 
+      // ── 背景归属：和别的壁纸插件共存的那个开关 ──
+      // 默认「自动让路」：只要 body 上有 data-we-wallpaper 就把局内背景让出去（开机动画照样保留）。
+      var modeRow = el('div', 'dsvs-media-row dsvs-media-mode')
+      var modeTop = el('div', 'dsvs-media-top')
+      modeTop.appendChild(el('span', 'dsvs-media-name', '背景归属'))
+      var modeStatus = el('span', 'dsvs-media-note', '')
+      modeTop.appendChild(modeStatus)
+      var modeActions = el('div', 'dsvs-media-actions')
+      var autoBtn = el('div', 'dsvs-media-btn', '自动让路')
+      var ownBtn = el('div', 'dsvs-media-btn', '始终接管')
+      modeActions.appendChild(autoBtn)
+      modeActions.appendChild(ownBtn)
+      modeTop.appendChild(modeActions)
+      modeRow.appendChild(modeTop)
+      block.appendChild(modeRow)
+
+      /** 当前模式（优先运行期配置）。 */
+      var currentMode = function () {
+        var bg = isObject(liveCfg.background) ? liveCfg.background : {}
+        return bg.mode === 'own' ? 'own' : 'auto'
+      }
+
+      /** 刷新"背景归属"这一行：模式高亮 + 是否检测到别的壁纸 + 聊天背景行是否已让路。 */
+      var refreshStatus = function () {
+        var mode = currentMode()
+        var occupied = otherWallpaperActive()
+        autoBtn.setAttribute('data-active', mode === 'auto' ? '1' : '0')
+        ownBtn.setAttribute('data-active', mode === 'own' ? '1' : '0')
+        if (mode === 'own') {
+          modeStatus.textContent = occupied ? '始终接管中 · 检测到其他壁纸插件' : '始终接管中'
+        } else if (occupied) {
+          modeStatus.textContent = '已让路 · 检测到其他壁纸插件'
+        } else {
+          modeStatus.textContent = '自动让路 · 未检测到其他壁纸插件'
+        }
+        // 让路时把"聊天背景"那行的名字前面加一句，避免用户以为坏了。
+        var bgRow = rows.background
+        if (bgRow !== undefined) {
+          var yielding = mode !== 'own' && occupied
+          bgRow.row.setAttribute('data-yielded', yielding ? '1' : '0')
+          bgRow.note.textContent = (yielding ? '已让路 · ' : '') + (bgRow.baseNote || '')
+        }
+      }
+
+      /** 切换模式：写成配置，然后立刻重新裁决（建层/撤层）。 */
+      var applyMode = function (mode) {
+        if (mode === currentMode()) {
+          refreshStatus()
+          return
+        }
+        var sent = global.fetch(mediaRoute + '?slot=background', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: mode }),
+        })
+        sent
+          .then(function (response) {
+            return response.json().catch(function () {
+              return null
+            })
+          })
+          .then(function (payload) {
+            if (!isObject(payload) || payload.ok !== true) return
+            if (isObject(liveCfg.background)) {
+              liveCfg.background.mode = mode
+              if (mode === 'own') liveCfg.background.enabled = true
+            }
+            api.config = liveCfg
+            render(payload)
+            syncWallpaperYield()
+            refreshStatus()
+          })
+          .then(undefined, noop)
+      }
+      autoBtn.addEventListener('click', function () {
+        applyMode('auto')
+      })
+      ownBtn.addEventListener('click', function () {
+        applyMode('own')
+      })
+
       parent.appendChild(block)
+      mediaUi = { render: render, refreshStatus: refreshStatus, rows: rows }
       refresh()
-      return { render: render, rows: rows }
+      return mediaUi
     }
 
     /** 把一组旋钮值同步到滑块位置与读数上。 */
@@ -1946,8 +2140,11 @@
     }
 
     // 背景视频出画面之后徽章才有东西可量。
-    video.addEventListener('loadeddata', scheduleBadge)
-    video.addEventListener('timeupdate', scheduleBadge)
+    // 背景关掉/让路时没有视频可量（调用方传 null），这时只要不挂这两个监听就行。
+    if (video !== null && typeof video.addEventListener === 'function') {
+      video.addEventListener('loadeddata', scheduleBadge)
+      video.addEventListener('timeupdate', scheduleBadge)
+    }
 
     doc.body.appendChild(pill)
     doc.body.appendChild(panel)

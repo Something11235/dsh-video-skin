@@ -504,3 +504,47 @@ test('素材路由：GET 状态 / 开关 / 上传 / 415 / 恢复默认（用户�
     server.close()
   }
 })
+
+test('素材路由也管"背景归属"：状态里带 mode，POST {mode} 能落盘（issue #4）', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-video-skin-mode-'))
+  const { ctx } = boot({ home })
+  const { server, base } = await serve(ctx.routes)
+  try {
+    // 默认 auto
+    let state = await (await fetch(`${base}${MEDIA_ROUTE}`)).json()
+    assert.equal(state.background.mode, 'auto')
+
+    // 切成"始终接管"
+    const posted = await fetch(`${base}${MEDIA_ROUTE}?slot=background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'own' }),
+    })
+    assert.equal(posted.status, 200)
+    state = await posted.json()
+    assert.equal(state.ok, true)
+    assert.equal(state.background.mode, 'own')
+    const onDisk = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+    assert.equal(onDisk.background.mode, 'own')
+
+    // 切回自动让路
+    state = await (
+      await fetch(`${base}${MEDIA_ROUTE}?slot=background`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'auto' }),
+      })
+    ).json()
+    assert.equal(state.background.mode, 'auto')
+
+    // 既没有 enabled 也没有合法 mode → 400
+    const bad = await fetch(`${base}${MEDIA_ROUTE}?slot=background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'hijack' }),
+    })
+    assert.equal(bad.status, 400)
+  } finally {
+    server.close()
+  }
+})

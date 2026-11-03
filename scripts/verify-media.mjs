@@ -172,18 +172,20 @@ try {
 
   const ui = await cdp.evaluate(`(() => {
     const rows = Array.from(document.querySelectorAll('.dsvs-media-row'))
+    const assetRows = rows.filter((row) => row.hasAttribute('data-slot'))
     return {
       count: rows.length,
-      slots: rows.map((row) => row.getAttribute('data-slot')),
-      each: rows.map((row) => ({
+      slots: assetRows.map((row) => row.getAttribute('data-slot')),
+      each: assetRows.map((row) => ({
         toggle: row.querySelector('.dsvs-media-toggle') !== null,
         buttons: row.querySelectorAll('.dsvs-media-btn').length,
         input: row.querySelector('.dsvs-media-input') !== null,
       })),
+      hasMode: rows.some((row) => row.classList.contains('dsvs-media-mode')),
       labels: Array.from(document.querySelectorAll('.dsvs-media-name')).map((n) => n.textContent),
     }
   })()`)
-  check(ui.count === 2, '面板里有素材区，两个槽位', ui)
+  check(ui.count === 3, '面板里有素材区：两个槽位 + 一行背景归属', ui)
   check(
     Array.isArray(ui.slots) && ui.slots[0] === 'boot' && ui.slots[1] === 'background',
     '槽位顺序是「开机动画 / 聊天背景」',
@@ -191,9 +193,10 @@ try {
   )
   check(
     Array.isArray(ui.each) && ui.each.every((row) => row.toggle && row.buttons === 2 && row.input),
-    '每行都有开关 + 更换 + 默认 + 隐藏文件框',
+    '每个素材行都有开关 + 更换 + 默认 + 隐藏文件框',
     ui,
   )
+  check(ui.hasMode === true, '第三行是「背景归属」（自动让路 / 始终接管）', ui)
 
   if (args.shot !== '') {
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png' })
@@ -266,6 +269,94 @@ try {
   // ④ 恢复默认
   const reset = await (await fetch(`${mediaUrl}?slot=background`, { method: 'DELETE' })).json()
   check(reset.ok === true && reset.background.custom === false, '「默认」按钮把素材恢复成包内那个', reset)
+
+  // ④b) 与 dsh-wallpaper-engine 共存（issue #4）：
+  //     模拟它在 body 上挂 data-we-wallpaper="on" + 一层 z-index:-2 的壁纸，
+  //     我们应当自动让路：撤掉背景层、不挂 data-dsvs，面板留着。
+  const yielded = await cdp.evaluate(`(async () => {
+    const wall = document.createElement('div')
+    wall.id = 'we-layer-fake'
+    wall.setAttribute('style', 'position:fixed;inset:0;z-index:-2;background:linear-gradient(160deg,#3b1d5e,#0b1020)')
+    document.body.appendChild(wall)
+    document.body.setAttribute('data-we-wallpaper', 'on')
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    return {
+      backdropGone: document.querySelector('#dsvs-backdrop') === null,
+      noDsvs: !document.documentElement.hasAttribute('data-dsvs'),
+      noMarker: !document.documentElement.hasAttribute('data-dsvs-background'),
+      panelAlive: document.querySelector('#dsvs-knobs') !== null,
+      wallpaperVisible: getComputedStyle(wall).zIndex === '-2',
+      status: (document.querySelector('.dsvs-media-mode .dsvs-media-note') || {}).textContent || '',
+    }
+  })()`)
+  check(yielded.backdropGone === true, '检测到壁纸插件：背景层自动撤掉（让路）', yielded)
+  check(yielded.noDsvs === true, '让路时不挂 data-dsvs（壁纸引擎的透明化规则才生效）', yielded)
+  check(yielded.noMarker === true, '让路时对外标记也不谎称"我在管背景"', yielded)
+  check(yielded.panelAlive === true, '面板仍然在（用户能改成"始终接管"）', yielded)
+  check(/让路|壁纸/.test(yielded.status), '面板里说明了当前是"已让路"', yielded)
+
+  if (args.shot !== '') {
+    const shot2 = await cdp.send('Page.captureScreenshot', { format: 'png' })
+    fs.writeFileSync(args.shot.replace(/\.png$/u, '-wallpaper.png'), Buffer.from(shot2.data, 'base64'))
+    console.log(`shot -> ${args.shot.replace(/\.png$/u, '-wallpaper.png')}`)
+  }
+
+  // 壁纸撤掉 → 我们的背景自动接回来
+  const restored = await cdp.evaluate(`(async () => {
+    document.body.removeAttribute('data-we-wallpaper')
+    const wall = document.querySelector('#we-layer-fake')
+    if (wall) wall.remove()
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    return {
+      backdrop: document.querySelector('#dsvs-backdrop') !== null,
+      dsvs: document.documentElement.getAttribute('data-dsvs'),
+      marker: document.documentElement.getAttribute('data-dsvs-background'),
+    }
+  })()`)
+  check(restored.backdrop === true, '壁纸撤掉后背景层自动接回来', restored)
+  check(restored.dsvs === 'on' && restored.marker === 'on', '接回来之后 data-dsvs / data-dsvs-background 都恢复', restored)
+
+  // 用户点「始终接管」→ 即使壁纸在台上也接管
+  const own = await cdp.evaluate(`(async () => {
+    document.body.setAttribute('data-we-wallpaper', 'on')
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    const buttons = Array.from(document.querySelectorAll('.dsvs-media-mode .dsvs-media-btn'))
+    const target = buttons.find((node) => /始终接管/.test(node.textContent || ''))
+    if (target) target.click()
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    return {
+      backdrop: document.querySelector('#dsvs-backdrop') !== null,
+      marker: document.documentElement.getAttribute('data-dsvs-background'),
+      active: buttons.map((node) => ({ label: node.textContent, active: node.getAttribute('data-active') })),
+    }
+  })()`)
+  check(own.backdrop === true, '点了「始终接管」之后，壁纸在台上也照样接管', own)
+  check(own.marker === 'on', '接管时对外标记也要正确', own)
+  check(
+    Array.isArray(own.active) && own.active.some((item) => /始终接管/.test(item.label || '') && item.active === '1'),
+    '按钮高亮切到「始终接管」',
+    own,
+  )
+
+  // 切回自动让路：壁纸在台上就再次让路
+  const backToAuto = await cdp.evaluate(`(async () => {
+    const buttons = Array.from(document.querySelectorAll('.dsvs-media-mode .dsvs-media-btn'))
+    const target = buttons.find((node) => /自动让路/.test(node.textContent || ''))
+    if (target) target.click()
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    return {
+      backdropGone: document.querySelector('#dsvs-backdrop') === null,
+      noDsvs: !document.documentElement.hasAttribute('data-dsvs'),
+    }
+  })()`)
+  check(backToAuto.backdropGone === true && backToAuto.noDsvs === true, '切回「自动让路」后再次让路', backToAuto)
+
+  // 收尾：把模拟的壁纸撤掉，别影响后面的断言
+  await cdp.evaluate(`(async () => {
+    document.body.removeAttribute('data-we-wallpaper')
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    return true
+  })()`)
 
   // ⑤ 关掉开机动画（重启后生效）
   const bootOff = await (

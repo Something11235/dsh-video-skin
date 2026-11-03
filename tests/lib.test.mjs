@@ -502,3 +502,35 @@ test('配置里的绝对路径素材能解析出来（用户自己的视频）',
   assert.equal(client.background.custom, true)
   assert.equal(client.background.src, '/g')
 })
+
+// ─────────────────── 与壁纸插件共存（issue #4） ───────────────────
+
+test('background.mode：默认 auto，own 才强制接管，off 等价于关掉', () => {
+  const base = { packageRoot, routes: ROUTES, version: 'test' }
+  // 默认 auto —— 「壁纸在台上就让路」
+  assert.equal(resolveConfig({}, base).client.background.mode, 'auto')
+  assert.equal(resolveConfig({ background: { mode: 'auto' } }, base).client.background.mode, 'auto')
+  // own —— 始终接管
+  assert.equal(resolveConfig({ background: { mode: 'own' } }, base).client.background.mode, 'own')
+  // off —— 视觉上等同 enabled:false（运行期只看 enabled）
+  const off = resolveConfig({ background: { mode: 'off' } }, base)
+  assert.equal(off.client.background.mode, 'off')
+  assert.equal(off.client.background.enabled, false)
+  // 脏值回 auto
+  assert.equal(resolveConfig({ background: { mode: 'steal' } }, base).client.background.mode, 'auto')
+})
+
+test('writeMediaConfig：mode 只接受 auto/own/off', () => {
+  const home = tmpdir()
+  writeMediaConfig({ homeDir: home, patch: { background: { mode: 'own' } } })
+  let raw = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+  assert.equal(raw.background.mode, 'own')
+  // 非法值不写
+  writeMediaConfig({ homeDir: home, patch: { background: { mode: 'hijack' } } })
+  raw = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+  assert.equal(raw.background.mode, 'own', '非法 mode 不该覆盖')
+  // 删掉 mode 回到默认
+  writeMediaConfig({ homeDir: home, patch: { background: { mode: undefined } } })
+  raw = JSON.parse(fs.readFileSync(path.join(home, 'dsh-video-skin.json'), 'utf8'))
+  assert.equal(raw.background, undefined, '唯一一项被删掉后整个 background 段也去掉')
+})

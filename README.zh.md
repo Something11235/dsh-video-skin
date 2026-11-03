@@ -12,6 +12,8 @@ DSH 的**视频皮肤**：把一段短片铺成整个 Web 界面的**聊天背�
   > （用户报的"有时候还没放完就切掉了"正是它）。现在默认 `exitMode: 'end'`：**先放完，再淡**；
   > 想要片尾交叉溶解可以设成 `'tail'`，淡出时长同样固定。
 - 聊天背景：**无声**、循环、`object-fit: cover` 铺满视口，画布与侧栏半透明，**画面明显看得见**、文字照样读得清。
+- **和别的壁纸插件共存**：检测到 dsh-wallpaper-engine 这类插件在管桌面时，**自动让路**
+  （不建背景层、不抢 `--dsw-alias-*` token），开机动画照常保留；也可以一键切「始终接管」（见 §3.7）。
 - **素材自己说了算**：面板顶部两行开关 —— 只想要背景不要开场动画？关掉就行。
   「更换…」选自己的 mp4/webm 上传即可，随时「默认」退回包内素材（见 §3.6）。
 - **界面上就能调透明度**：右下角一个小圆钮 → 三个滑块 + 三个预设 + **实时文字对比度读数**；
@@ -27,7 +29,7 @@ DSH 的**视频皮肤**：把一段短片铺成整个 Web 界面的**聊天背�
 **设置 → 插件 → 添加插件**，贴进这一行，点「安装」，然后 **完全退出并重新打开 DSH**：
 
 ```
-dsh-video-skin@0.1.5
+dsh-video-skin@0.1.6
 ```
 
 - **npm 上有预构建产物**（当前最新 `0.1.5`，包内已含素材与产物，不需要构建）。国内装 npm 比装 GitHub 快得多；
@@ -209,6 +211,7 @@ powershell -ExecutionPolicy Bypass -File "D:\Projects\DSH工作台\插件制作\
 | --- | --- | --- |
 | **`boot.enabled`** | `true` | 关掉开场动画（界面上也能关，见 §3.6） |
 | **`background.enabled`** | `true` | 关掉聊天背景 |
+| **`background.mode`** | `auto` | 局内背景的归属：`auto` = 检测到别的壁纸插件就让路（默认）；`own` = 始终接管；`off` = 等同关掉 |
 | **`boot.file`** / **`background.file`** | 包内素材 | 换成自己的视频：包内相对路径或**绝对路径**都行；单文件 ≤ 96 MiB，只支持 mp4/webm/ogv |
 | **`mode`** | `ask` | `ask` = 只弹一句提示、点了才切（默认）；`auto` = 页面加载后自动切并给撤销入口；`off` = 完全关掉。**启动期绝不会碰设置**（0.1.3 的启动崩溃就是踩了这个，见 §3.4） |
 | **`panel`** | `1` | **对话框/弹层/菜单/卡片/设置页**的不透明度。`1` = 内核原生不透明（默认，最稳）；小于 1 才覆盖 `layer-1/2/3`，会透出背后的内容 |
@@ -367,7 +370,7 @@ alpha 都必须等于 1），单元测试里则是"`--dsvs-layer1/2/3` 不该由
 
 ```powershell
 dsh plugin --profile desktop remove dsh-video-skin      # 只摘掉这一个插件
-dsh plugin --profile desktop add dsh-video-skin@0.1.5   # 修好后再装回来
+dsh plugin --profile desktop add dsh-video-skin@0.1.6   # 修好后再装回来
 ```
 ### 3.6 换掉 / 关掉素材（开机动画、聊天背景各管各的）
 
@@ -411,6 +414,39 @@ dsh plugin --profile desktop add dsh-video-skin@0.1.5   # 修好后再装回来
 ```powershell
 node scripts/verify-media.mjs --url "<带令牌地址>" --dsh-home <DSH_HOME>
 ```
+### 3.7 和别的壁纸插件共存（issue #4）
+
+同时装 [dsh-wallpaper-engine](https://github.com/elysia395/dsh-wallpaper-engine) 这类"壁纸插件"时，
+双方都想管**局内背景**（`z-index:-1` 那一层 + 页面的半透明化 token），天然会打架：
+我们的 `#dsvs-backdrop` 会盖住对方的壁纸，对方也看不到自己的画。
+
+**现在的默认行为是"自动让路"**：只要对方在 `body` 上挂了公开标记 `data-we-wallpaper`（= 有壁纸在台上），
+本插件就不建背景层、也不挂 `data-dsvs`（所以不会用 `!important` 去压页面底色 token），
+壁纸正常透出来；壁纸撤掉后我们的背景**自动接回来**。整个过程**不碰开机动画**。
+
+面板里的「背景归属」一行就是这个开关（见上图 §3.6 的第三行）：
+
+| 值 | 行为 |
+| --- | --- |
+| **`auto`（默认）** | 检测到别的壁纸在台上就让路；没有就自己接管 |
+| `own` | 始终由本插件接管（对方壁纸会被盖住，但它在下面仍在渲染） |
+
+写进配置：
+
+```json
+{ "background": { "mode": "own" } }
+```
+
+这条约定是**双向**的：我们只读对方的 `data-we-wallpaper`，从不写它；同时我们对外暴露只读标记
+`html[data-dsvs-background="on"]`（= 此刻本插件真的在管背景），其他插件可以据此避让，不必去猜
+`#dsvs-backdrop` 在不在。这是 dsh-skins ↔ dsh-wallpaper-engine 已经用过的那套读法。
+
+还留了一个入口：`background.mode: "off"` 等价于关掉局内背景（只保留开机动画），
+和面板里把「聊天背景」关掉是同一个效果。
+
+> 已知边界：切到 `own`（始终接管）时，对方的 `.we-scrim`（同样 `z-index:-1`，但更晚插入 DOM）
+> 会按文档序压在我们的视频上，把画面压暗一点 —— 这是"两个插件都坚持要当背景"的必然结果，
+> 用默认的 `auto` 就不会遇到。
 ## 4. 它是怎么接进去的（以及几个不许改的约束）
 
 ```

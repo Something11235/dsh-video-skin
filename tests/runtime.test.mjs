@@ -882,11 +882,13 @@ test('面板里的素材区：两个槽位、开关/更换/默认都在，状态
 
 
   const rows = panel(h).querySelectorAll('.dsvs-media-row')
-  assert.equal(rows.length, 2, '开机动画 + 聊天背景两行')
+  assert.equal(rows.length, 3, '开机动画 + 聊天背景 + 背景归属（和壁纸插件共存的开关）')
   assert.equal(rows[0].getAttribute('data-slot'), 'boot')
   assert.equal(rows[1].getAttribute('data-slot'), 'background')
-  for (const row of rows) {
-    assert.ok(row.querySelector('.dsvs-media-toggle') !== null, '每一行都有开关')
+  assert.equal(rows[2].className.includes('dsvs-media-mode'), true, '第三行是背景归属')
+  assert.equal(rows[2].querySelectorAll('.dsvs-media-btn').length, 2, '自动让路 / 始终接管')
+  for (const row of rows.slice(0, 2)) {
+    assert.ok(row.querySelector('.dsvs-media-toggle') !== null, '每个素材行都有开关')
     assert.equal(row.querySelectorAll('.dsvs-media-btn').length, 2, '更换 + 默认')
     assert.ok(row.querySelector('.dsvs-media-input') !== null, '带一个隐藏的文件选择框')
   }
@@ -937,4 +939,64 @@ test('点开关会写回宿主，并且关掉聊天背景时只摘视频层、�
   assert.equal(h.body.querySelector('#dsvs-knobs-pill') !== null, true, '面板入口必须留着')
   assert.equal(h.body.querySelector('#dsvs-knobs') !== null, true, '面板本身必须留着，否则用户没有入口再打开')
   assert.equal(h.body.querySelector('#dsvs-backdrop'), null, '视频层应该被摘掉')
+})
+
+test('别的壁纸在台上时自动让路：不建背景层、不挂 data-dsvs，但开机动画不受影响', async () => {
+  const h = createHarness()
+  // 模拟 dsh-wallpaper-engine：有壁纸时在 body 上挂这个公开标记
+  h.body.setAttribute('data-we-wallpaper', 'on')
+  h.run(RUNTIME, knobConfig({
+    media: { route: '/dsh-video-skin/media', limitBytes: 96 * 1024 * 1024 },
+  }))
+  h.window.fetch = () =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          background: { enabled: true, custom: false, name: '默认素材', mode: 'auto' },
+          boot: { enabled: true, custom: false, name: '默认素材' },
+        }),
+    })
+  await reachBackdrop(h)
+  await flush()
+
+
+  assert.equal(backdrop(h), null, '让路时不建背景层')
+  assert.equal(h.documentElement.getAttribute('data-dsvs'), null, '让路时不挂 data-dsvs（否则 !important 会压掉壁纸引擎的透明化）')
+  assert.equal(h.documentElement.getAttribute('data-dsvs-background'), null, '对外标记也不该说"我在管背景"')
+  assert.equal(h.window.__DSH_VIDEO_SKIN__.state.yielded, true, '运行期状态要记下"让路"')
+  // 面板必须还在：否则用户没有入口改成"始终接管"
+  assert.ok(h.body.querySelector('#dsvs-knobs-pill') !== null, '圆钮仍在')
+  assert.ok(h.body.querySelector('#dsvs-knobs') !== null, '面板仍在')
+
+})
+
+test('mode=own 时即使壁纸在台上也接管（用户显式选择优先级最高）', async () => {
+  const h = createHarness()
+  h.body.setAttribute('data-we-wallpaper', 'on')
+  h.run(RUNTIME, knobConfig({
+    background: {
+      enabled: true,
+      src: '/dsh-video-skin/background.mp4',
+      veil: 0.14,
+      surface: 0.2,
+      surfaceLight: 0.6,
+      veilLight: 0.1,
+      panel: 1,
+      controls: true,
+      delayMs: 0,
+      playbackRate: 1,
+      mode: 'own',
+    },
+    media: { route: '/dsh-video-skin/media', limitBytes: 96 * 1024 * 1024 },
+  }))
+  await reachBackdrop(h)
+  await flush()
+
+  assert.ok(backdrop(h) !== null, 'own 模式要接管')
+  assert.equal(h.documentElement.getAttribute('data-dsvs'), 'on')
+  assert.equal(h.documentElement.getAttribute('data-dsvs-background'), 'on', '对外标记也要说"我在管背景"')
+  assert.equal(h.window.__DSH_VIDEO_SKIN__.state.yielded, false)
 })

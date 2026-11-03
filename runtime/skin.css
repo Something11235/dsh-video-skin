@@ -793,3 +793,22 @@ body:not([data-ds-dark-theme]) .dsvs-media-toggle {
   opacity: 0.4;
   pointer-events: none;
 }
+
+/* 背景归属（和 dsh-wallpaper-engine 共存的那个开关）：
+   两个小按钮表示 auto / own，data-active 高亮当前值。 */
+.dsvs-media-mode .dsvs-media-btn[data-active="1"] {
+  background: rgba(96, 165, 250, 0.3);
+  border-color: rgba(147, 197, 253, 0.55);
+  color: #e8f2ff;
+}
+
+body:not([data-ds-dark-theme]) .dsvs-media-mode .dsvs-media-btn[data-active="1"] {
+  background: rgba(27, 79, 138, 0.16);
+  border-color: rgba(27, 79, 138, 0.45);
+  color: #1b4f8a;
+}
+
+/* 让路的行整体降一点存在感，但仍然可点（用户能改回来）。 */
+.dsvs-media-row[data-yielded="1"] .dsvs-media-note {
+  opacity: 0.85;
+}
