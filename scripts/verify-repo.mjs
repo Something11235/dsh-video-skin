@@ -142,6 +142,11 @@ function repair() {
   } else {
     check(true, 'origin 已存在，保留不动')
   }
+  // 修复后要顺手把"上游分支"也接回去：少了这个，`git push` 会报
+  // "no upstream ... push.autoSetupRemote"（2026-11-03 实际踩到）。
+  const setRemote = git(['config', `branch.${branch}.remote`, 'origin'], { allowFail: true })
+  const setMerge = git(['config', `branch.${branch}.merge`, `refs/heads/${branch}`], { allowFail: true })
+  check(setRemote.ok && setMerge.ok, `恢复上游跟踪（origin/${branch}）`, '')
   const reset = git(['reset', '-q'])
   check(reset.ok, '重建 index（git reset）', reset.out)
   return init.ok && symbolic.ok && reset.ok
