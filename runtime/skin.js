@@ -195,10 +195,109 @@
 
   var boot = null
 
+  /**
+   * DSH 首屏公约 v1：认领 / 释放 / 等待（零依赖内联版）。
+   * 契约见 https://github.com/xusu400-tech/dsh-ui-conventions/blob/main/conventions/boot.md
+   */
+  function createDshBoot(o) {
+    var W = typeof window !== 'undefined' ? window : global
+    var D = typeof document !== 'undefined' ? document : null
+    function n(v, d, lo, hi) { var x = Number(v); if (!isFinite(x)) x = d; return Math.min(hi, Math.max(lo, x)) }
+    var cfg = {
+      id: o.id,
+      priority: n(o.priority, 100, 0, 10000),
+      maxMs: n(o.maxMs, 20000, 1000, 900000),
+      waitCapMs: n(o.waitCapMs, 120000, 1000, 900000),
+      graceMs: n(o.graceMs, 4000, 0, 120000),
+      slackMs: 2000,
+    }
+    function snapshot() {
+      try { return W.__DSH_UI_BOOT__ && W.__DSH_UI_BOOT__.v === 1 ? W.__DSH_UI_BOOT__ : null } catch (e) { return null }
+    }
+    function write(s) {
+      try {
+        W.__DSH_UI_BOOT__ = s
+        if (D && D.documentElement) {
+          if (s && s.owner) {
+            D.documentElement.setAttribute('data-dsh-ui-boot', s.owner)
+            D.documentElement.setAttribute('data-dsh-ui-boot-since', String(s.since))
+          } else {
+            D.documentElement.removeAttribute('data-dsh-ui-boot')
+            D.documentElement.removeAttribute('data-dsh-ui-boot-since')
+          }
+        }
+      } catch (e) { /* 标记失败不影响播放 */ }
+    }
+    function claim() {
+      var s = { v: 1, owner: cfg.id, priority: cfg.priority, since: Date.now(), maxMs: cfg.maxMs }
+      write(s)
+      try { W.dispatchEvent(new W.CustomEvent('dsh-ui-boot:claim', { detail: { id: cfg.id, priority: cfg.priority, maxMs: cfg.maxMs } })) } catch (e) {}
+      return s
+    }
+    function release(reason) {
+      var cur = snapshot()
+      if (!cur || cur.owner !== cfg.id) return false
+      write({ v: 1, owner: null, priority: null, since: null, maxMs: null })
+      try { W.dispatchEvent(new W.CustomEvent('dsh-ui-boot:release', { detail: { id: cfg.id, reason: reason || 'ended' } })) } catch (e) {}
+      return true
+    }
+    /** 空闲（或台上者已僵死、或等待超上限）时回调 onGo，且只回调一次。 */
+    function whenFree(onGo) {
+      var startedAt = Date.now()
+      var done = false
+      function go(why) { if (done) return; done = true; try { W.removeEventListener('dsh-ui-boot:release', onRelease) } catch (e) {} onGo(why) }
+      function onRelease() { go('release') }
+      try { W.addEventListener('dsh-ui-boot:release', onRelease) } catch (e) {}
+      var timer = setInterval(function () {
+        var s = snapshot()
+        var now = Date.now()
+        if (!s || !s.owner) return go('free')
+        if (s.owner === cfg.id) return go('self')
+        if (now - s.since > (s.maxMs || 0) + cfg.slackMs) return go('took-over-stale')
+        if (now - startedAt > cfg.waitCapMs) return go('wait-cap')
+      }, 120)
+      setTimeout(function () { if (!snapshot()) go('grace-expired') }, cfg.graceMs)
+      return function cancel() { clearInterval(timer); try { W.removeEventListener('dsh-ui-boot:release', onRelease) } catch (e) {} }
+    }
+    return { id: cfg.id, priority: cfg.priority, maxMs: cfg.maxMs, claim: claim, release: release, whenFree: whenFree, snapshot: snapshot }
+  }
+
+  /** 本插件的首屏协调器（首次播放时构造，配置来自 boot.*）。 */
+  var dshBoot = null
+  function dshBootFor() {
+    if (dshBoot === null) {
+      dshBoot = createDshBoot({
+        id: 'dsh-video-skin',
+        priority: num(bootCfg.priority, 100, 0, 10000),
+        maxMs: num(bootCfg.maxMs, num(bootCfg.holdMs, 18000, 4000, 120000) + 8000, 4000, 900000),
+        waitCapMs: num(bootCfg.waitCapMs, 120000, 1000, 900000),
+        graceMs: num(bootCfg.graceMs, 4000, 0, 120000),
+      })
+    }
+    return dshBoot
+  }
+
+  /** 把本插件自己的退场原因映射到公约词汇。 */
+  function dshBootReason(reason) {
+    var r = String(reason || '').toLowerCase()
+    if (r.indexOf('skip') >= 0) return 'skipped'
+    if (r.indexOf('fail') >= 0 || r.indexOf('error') >= 0) return 'failed'
+    if (r.indexOf('endless') >= 0 || r.indexOf('timeout') >= 0 || r.indexOf('noframe') >= 0) return 'timeout'
+    return 'ended'
+  }
+
   function startBootSurface() {
-    if (bootCfg.enabled === false || boot !== null) return null
+    if (boot !== null) return null
+    if (bootCfg.enabled === false) return null
     var src = typeof bootCfg.src === 'string' ? bootCfg.src : ''
     if (src === '') return null
+    /* 公约：首屏是独占资源。别人已在台上时本次不播 —— 不叠层、不抢占。 */
+    var bs = dshBootFor()
+    var owner = bs.snapshot()
+    if (owner && owner.owner && owner.owner !== bs.id) {
+      if (global.console && global.console.info) global.console.info('[video-skin] boot skipped: ' + owner.owner + ' owns the first screen')
+      return null
+    }
 
     var fadeMs = num(bootCfg.fadeMs, 1000, 200, 6000)
     /** `end`（默认，放完再淡）/ `tail`（片尾交叉溶解）。 */
@@ -308,6 +407,7 @@
     function enter(span, reason) {
       if (state.leaving) return
       state.leaving = true
+      dshBootFor().release(dshBootReason(reason))   /* 公约：开始淡出即释放，下一段无缝接上 */
       api.state.phase = 'leaving'
       api.state.entered = true
       api.state.reason = reason
@@ -766,6 +866,7 @@
     } catch (error) {
       return null
     }
+    bs.claim()   /* 公约：上台前认领 */
     api.state.phase = 'surface'
     watchProgress()
     watchAppReady()
