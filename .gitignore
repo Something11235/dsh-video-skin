@@ -1,0 +1,9 @@
+# 可抛弃的验证用 DSH_HOME（scripts/make-verify-profile.mjs 生成）
+.verify-home/
+# 装机预演 / git 安装预演留下的临时目录
+.rehearse/
+# 依赖：本插件**零运行时依赖**，出现 node_modules 只可能是本地误装
+node_modules/
+# 用户自己的配置覆盖不该进仓库；包内那份要提交时叫 video-skin.config.json（会被插件读取）
+dsh-video-skin.json
+*.log

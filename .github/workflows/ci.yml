@@ -1,0 +1,34 @@
+# 离线自检。刻意**不做** git 安装预演（那个要 pnpm + 网络/本地 git），
+# 需要时手动跑：node scripts/verify-git-install.mjs
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # verify-all 里的"素材没有音轨"这一项用 ffprobe；装不上时会退化成
+      # 扫描 mp4 的音频采样描述盒，所以这一步失败不致命。
+      - name: ffmpeg (optional)
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: 语法与装载
+        run: node scripts/check-syntax.mjs
+
+      - name: 单元 / 时序 / 真 HTTP 用例
+        run: node --test "tests/**/*.test.mjs"
+
+      - name: 离线自检汇总（素材、打包白名单、patch 契约）
+        run: node scripts/verify-all.mjs

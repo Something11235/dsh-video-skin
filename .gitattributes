@@ -1,0 +1,13 @@
+# 文本一律规范化成 LF：这个仓库里的文本会被**原样读出来内联进 HTML**
+# （runtime/skin.js、runtime/skin.css），行尾在整个分发链路上保持一致最省心。
+* text=auto eol=lf
+
+# 二进制素材与截图不要做任何行尾/编码转换 —— mp4 被 CRLF 处理过就废了。
+*.mp4 binary
+*.png binary
+*.woff2 binary
+
+# GitHub 的语言统计：把截图算成文档、素材算成 vendor，
+# 免得这个"一半是视频和 CSS"的插件被显示成一个纯 JS 项目。
+docs/* linguist-documentation
+assets/* linguist-vendored
