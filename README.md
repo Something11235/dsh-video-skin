@@ -91,6 +91,7 @@ then fading into the app, and **skippable with a click**.
 | Boot animation: clip fills the window (with sound), real boot progress bar, permanent "click to skip" pill | Light theme: backdrop fills the window, body-text contrast p5 = **7.90** |
 | ![dark theme backdrop](docs/e2e-3-dark.png) | ![settings, light](docs/e2e-5-settings-light.png) |
 | Dark theme: video clearly visible, body-text contrast p5 = **6.86**, median 16.06 (AA needs 4.5) | Settings view (light): opaque panel — the chat behind does not bleed in |
+<img src="preview/preview.gif" alt="dsh-video-skin 均衡模式动态背景" width="720" />
 
 ![settings, dark](docs/e2e-6-settings-dark.png)
 
